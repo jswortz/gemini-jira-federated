@@ -1,37 +1,34 @@
 # Implementation Plan: `gemini-jira-federated` ADK RAG Agent
 
 ## 1. Objective
-Build a clean, tested Google ADK repository in `/usr/local/google/home/jwortz/gemini-jira-federated` that demonstrates how to build a grounded RAG agent over the Gemini Enterprise **Federated Jira Data Connector**:
-- **GCP Project**: `wortz-project-352116` (Project Number `679926387543`)
-- **Location**: `global` (Discovery Engine) / `us-central1` (Vertex AI Gemini)
-- **Gemini Enterprise Engine**: `ge-jira-vpcsc-app`
-- **Data Connector Collection**: `jira-federated_1782320633397` (`projects/679926387543/locations/global/collections/jira-federated_1782320633397/dataConnector`)
-- **Jira Instance**: `https://jwortz.atlassian.net`
+Build a clean, tested Google ADK repository in `gemini-jira-federated` that demonstrates how to build a grounded RAG agent over the Gemini Enterprise **Federated Jira Data Connector**:
+- **Configuration**: Managed dynamically via `.env` (`DISCOVERY_ENGINE_PROJECT_ID`, `DISCOVERY_ENGINE_ID`, `JIRA_CONNECTOR_COLLECTION_ID`, `JIRA_INSTANCE_URI`, `OAUTH_USER_ACCOUNT`).
+- **Target Location**: `global` (Discovery Engine) / `us-central1` (Vertex AI Gemini)
 
 ## 2. Technical Architecture
-Because `jira-federated_1782320633397` is a Unified Federated Connector (`connectorType: "THIRD_PARTY_FEDERATED"`, `connectorModes: ["FEDERATED", "ACTIONS"]`, `incrementalSyncDisabled: true`), zero documents are stored in Branch 0. Instead, Discovery Engine proxies queries at runtime using the end-user's OAuth identity:
+Because the unified connector is a Federated Connector (`connectorType: "THIRD_PARTY_FEDERATED"`, `connectorModes: ["FEDERATED", "ACTIONS"]`, `incrementalSyncDisabled: true`), zero documents are stored in Branch 0. Instead, Discovery Engine proxies queries at runtime using the end-user's OAuth identity:
 
 ```mermaid
 flowchart LR
     User["User in adk web"] -->|"1. Google OAuth2 (EUC / AuthConfig)"| ADK["ADK Agent (jira_federated_agent)"]
     ADK -->|"2. Check / Acquire 3LO Token\n(:checkRefreshToken / :acquireAccessToken)"| DEAuth["Discovery Engine DataConnector Vault"]
     ADK -->|"3. Federated RAG Query\n(:invokeConnectorMcp -> search_issues / get_issue)"| DEMcp["Discovery Engine InvokeConnectorMcp"]
-    DEMcp -->|"4. Live 3LO Proxy"| Jira["Atlassian Jira Cloud (jwortz.atlassian.net)"]
+    DEMcp -->|"4. Live 3LO Proxy"| Jira["Atlassian Jira Cloud (<tenant>.atlassian.net)"]
 ```
 
 ### Repository Structure
 - `pyproject.toml` — `uv` project configuration and dependencies (`google-adk`, `google-auth`, `google-genai`, `requests`, `python-dotenv`, `pytest`).
-- `.gitignore` / `.env.example` / `.env` — Non-secret configuration targeting `wortz-project-352116`, `ge-jira-vpcsc-app`, and `jira-federated_1782320633397`.
+- `.gitignore` / `.env.example` — Non-secret configuration template.
 - `jira_federated_agent/`
   - `__init__.py` — Exposes `agent` module for `adk web`.
   - `config.py` — Typed configuration loader and input validators.
-  - `auth.py` — End-user OAuth2 credential resolver (supports ADK `AuthConfig` / `tool_context.request_credential` in `adk web`, environment OAuth tokens, and local Google OAuth user credentials for `admin@jwortz.altostrat.com`, plus Vertex AI ADC bridging).
+  - `auth.py` — End-user OAuth2 credential resolver (supports ADK `AuthConfig` / `tool_context.request_credential` in `adk web`, environment OAuth tokens, and local Google OAuth user credentials, plus Vertex AI ADC bridging).
   - `jira_connector_client.py` — Client for Discovery Engine `DataConnectorService` (`:checkRefreshToken`, `:acquireAccessToken`, `:acquireAndStoreRefreshToken`, `widgetConfigs/default_search_widget_config`, and `:invokeConnectorMcp` for `search_issues`, `get_issue`, `list_projects`, and `search_projects`).
   - `agent.py` — Defines the ADK `root_agent` (`LlmAgent`) and tool functions with OAuth verification and grounded Jira citations.
 - `tests/`
   - `test_config_and_auth.py` — Unit tests for input validation, JQL sanitization, OAuth credential resolution, and ADK `AuthConfig` generation.
   - `test_jira_connector_client.py` — Unit tests for Discovery Engine federated connector calls (`check_oauth_status`, `search_issues`, `get_issue`, `list_projects`, `complete_oauth_consent`).
-  - `test_integration_live.py` — Live integration test against `wortz-project-352116` (`jira-federated_1782320633397`) verifying real Jira issues (`GEAP-3`, `CCS-68`, `CCS-50`, etc.) are retrieved.
+  - `test_integration_live.py` — Live integration test against the configured connector verifying real Jira issues are retrieved when credentials are available.
 
 ## Verification Plan
 
