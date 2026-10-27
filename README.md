@@ -2,7 +2,9 @@
 
 This repository demonstrates how to build a grounded **Google Agent Development Kit (ADK)** agent over a **Gemini Enterprise (Discovery Engine) Federated Jira Data Connector** (`connectorType: "THIRD_PARTY_FEDERATED"`) using **end-user OAuth2 authentication**.
 
-## Target Data Source
+![ADK Web UI with Jira Federated Agent](assets/adk_web_jira_agent.png)
+
+## Target Data Source (Configured via `.env`)
 - **Console URL**: [Gemini Enterprise Jira Federated Connector (`jira-federated_1782320633397`)](https://console.cloud.google.com/gemini-enterprise/locations/global/engines/ge-jira-vpcsc-app/collections/jira-federated_1782320633397/connector/details?project=wortz-project-352116)
 - **GCP Project**: `wortz-project-352116` (`679926387543`)
 - **Discovery Engine App / Engine**: `ge-jira-vpcsc-app` (`global`)

@@ -14,8 +14,9 @@ build/
 *credentials*.json
 .adk/
 
-# Local media & screenshots
+# Media & screenshots (assets/ is tracked)
 *.png
 *.jpg
 *.jpeg
 *.gif
+!assets/*
