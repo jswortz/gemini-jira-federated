@@ -18,20 +18,47 @@ from jira_federated_agent.auth import (
 
 def test_connector_config_defaults():
     cfg = ConnectorConfig()
-    assert cfg.project_id == "wortz-project-352116"
-    assert cfg.project_number == "679926387543"
+    cfg.validate()
+    assert cfg.project_id
+    assert cfg.project_number
     assert cfg.location == "global"
-    assert cfg.engine_id == "ge-jira-vpcsc-app"
-    assert cfg.collection_id == "jira-federated_1782320633397"
+    assert cfg.engine_id
+    assert cfg.collection_id
+    assert cfg.data_connector_name.startswith("projects/")
+    assert len(cfg.entity_data_stores) == 10
+
+
+def test_connector_config_custom_env(monkeypatch):
+    monkeypatch.setenv("DISCOVERY_ENGINE_PROJECT_ID", "custom-proj-999")
+    monkeypatch.setenv("DISCOVERY_ENGINE_PROJECT_NUMBER", "999999999")
+    monkeypatch.setenv("DISCOVERY_ENGINE_LOCATION", "us-central1")
+    monkeypatch.setenv("DISCOVERY_ENGINE_ID", "custom-engine")
+    monkeypatch.setenv("JIRA_CONNECTOR_COLLECTION_ID", "custom-connector")
+    monkeypatch.setenv("JIRA_INSTANCE_URI", "https://custom.atlassian.net")
+    monkeypatch.setenv("OAUTH_USER_ACCOUNT", "custom@example.com")
+
+    cfg = ConnectorConfig()
+    cfg.validate()
+    assert cfg.project_id == "custom-proj-999"
+    assert cfg.project_number == "999999999"
+    assert cfg.location == "us-central1"
+    assert cfg.engine_id == "custom-engine"
+    assert cfg.collection_id == "custom-connector"
+    assert cfg.jira_instance_uri == "https://custom.atlassian.net"
+    assert cfg.oauth_user_account == "custom@example.com"
     assert (
         cfg.data_connector_name
-        == "projects/679926387543/locations/global/collections/jira-federated_1782320633397/dataConnector"
+        == "projects/999999999/locations/us-central1/collections/custom-connector/dataConnector"
     )
-    assert len(cfg.entity_data_stores) == 10
-    assert (
-        "projects/679926387543/locations/global/collections/default_collection/dataStores/jira-federated_1782320633397_issue"
-        in cfg.entity_data_stores
-    )
+    assert cfg.base_api_url == "https://us-central1-discoveryengine.googleapis.com/v1alpha"
+
+
+def test_connector_config_validation_failure(monkeypatch):
+    monkeypatch.delenv("DISCOVERY_ENGINE_PROJECT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    cfg = ConnectorConfig(project_id="")
+    with pytest.raises(ValueError, match="Missing required environment variables"):
+        cfg.validate()
 
 
 def test_validate_issue_key():

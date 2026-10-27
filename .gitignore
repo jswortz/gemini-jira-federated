@@ -13,3 +13,9 @@ build/
 *.secret
 *credentials*.json
 .adk/
+
+# Local media & screenshots
+*.png
+*.jpg
+*.jpeg
+*.gif

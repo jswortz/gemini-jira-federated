@@ -89,9 +89,21 @@ def extract_token_from_tool_context(tool_context: ToolContext | Any | None) -> s
 
 
 def load_gcloud_user_oauth_credentials(
-    account: str, quota_project_id: str = "wortz-project-352116"
+    account: str | None = None,
+    quota_project_id: str | None = None,
 ) -> GoogleOAuthCredentials | None:
     """Loads end-user OAuth2 credentials from local gcloud sqlite credential store in memory."""
+    target_account = account or os.getenv("OAUTH_USER_ACCOUNT", "")
+    if not target_account:
+        return None
+
+    target_project = (
+        quota_project_id
+        or os.getenv("DISCOVERY_ENGINE_PROJECT_ID")
+        or os.getenv("GOOGLE_CLOUD_PROJECT")
+        or ""
+    )
+
     db_path = os.path.expanduser("~/.config/gcloud/credentials.db")
     if not os.path.exists(db_path):
         return None
@@ -100,7 +112,8 @@ def load_gcloud_user_oauth_credentials(
         conn = sqlite3.connect(db_path)
         try:
             row = conn.execute(
-                "SELECT value FROM credentials WHERE account_id = ?", (account,)
+                "SELECT value FROM credentials WHERE account_id = ?",
+                (target_account,),
             ).fetchone()
         finally:
             conn.close()
@@ -119,7 +132,7 @@ def load_gcloud_user_oauth_credentials(
             client_id=data.get("client_id"),
             client_secret=data.get("client_secret"),
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
-            quota_project_id=quota_project_id,
+            quota_project_id=target_project or None,
         )
         creds.refresh(google.auth.transport.requests.Request())
         return creds
@@ -131,7 +144,7 @@ def load_gcloud_user_oauth_credentials(
 def resolve_user_oauth_token(
     tool_context: ToolContext | Any | None = None,
     account: str | None = None,
-    project_id: str = "wortz-project-352116",
+    project_id: str | None = None,
 ) -> tuple[str | None, str]:
     """Resolves the end-user's OAuth2 access token across ADK Web, env, and gcloud OAuth.
 
@@ -160,11 +173,18 @@ def resolve_user_oauth_token(
         return env_token, "env:GOOGLE_OAUTH_ACCESS_TOKEN"
 
     # 4. Load and refresh OAuth2 user credentials for the configured account
-    target_account = account or os.getenv(
-        "OAUTH_USER_ACCOUNT", "admin@jwortz.altostrat.com"
+    target_account = account or os.getenv("OAUTH_USER_ACCOUNT", "")
+    target_project = (
+        project_id
+        or os.getenv("DISCOVERY_ENGINE_PROJECT_ID")
+        or os.getenv("GOOGLE_CLOUD_PROJECT")
+        or ""
     )
+    if not target_account:
+        return None, "unconfigured_oauth_user_account"
+
     creds = load_gcloud_user_oauth_credentials(
-        account=target_account, quota_project_id=project_id
+        account=target_account, quota_project_id=target_project
     )
     if creds and creds.token:
         return creds.token, f"oauth_user:{target_account}"
@@ -189,7 +209,7 @@ def resolve_user_oauth_token(
 
 def configure_vertex_ai_user_credentials(
     account: str | None = None,
-    project_id: str = "wortz-project-352116",
+    project_id: str | None = None,
 ) -> None:
     """Ensures google.auth.default() uses the authorized user's OAuth credentials for Vertex AI.
 
@@ -197,11 +217,18 @@ def configure_vertex_ai_user_credentials(
     is bound to a different identity, this bridges google.auth.default() in memory to the
     target OAuth user account without writing any credential files to disk.
     """
-    target_account = account or os.getenv(
-        "OAUTH_USER_ACCOUNT", "admin@jwortz.altostrat.com"
+    target_account = account or os.getenv("OAUTH_USER_ACCOUNT", "")
+    target_project = (
+        project_id
+        or os.getenv("DISCOVERY_ENGINE_PROJECT_ID")
+        or os.getenv("GOOGLE_CLOUD_PROJECT")
+        or ""
     )
+    if not target_account:
+        return
+
     creds = load_gcloud_user_oauth_credentials(
-        account=target_account, quota_project_id=project_id
+        account=target_account, quota_project_id=target_project
     )
     if creds is None:
         return
@@ -217,7 +244,7 @@ def configure_vertex_ai_user_credentials(
         try:
             if not creds.valid:
                 creds.refresh(request or google.auth.transport.requests.Request())
-            return creds, (quota_project_id or project_id)
+            return creds, (quota_project_id or target_project)
         except Exception:
             return original_default(
                 scopes=scopes,

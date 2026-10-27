@@ -117,7 +117,7 @@ def search_jira_issues(
     max_results: int = 20,
     tool_context: ToolContext | None = None,
 ) -> dict[str, Any]:
-    """Searches live Jira issues over the Gemini Enterprise Federated Jira Connector (`jira-federated_1782320633397`).
+    """Searches live Jira issues over the configured Gemini Enterprise Federated Jira Connector.
 
     Args:
         query: Natural language keyword or phrase to search across Jira issue summaries,
@@ -192,7 +192,7 @@ AGENT_INSTRUCTION = f"""You are a Grounded Jira Assistant powered by Google ADK 
    - When asked about authentication status or if a tool reports an authorization error, call `check_jira_oauth_status()`.
    - If the user is not yet authorized in the connector vault, share the `authorization_uri` from `check_jira_oauth_status()` and offer to complete the flow via `complete_jira_oauth_consent(redirect_url)` once they paste the callback URL.
 3. **Clear Citations**:
-   - Format Jira issues in a clean Markdown table or structured bullet list including the **Issue Key** (as a clickable link `[KEY](https://jwortz.atlassian.net/browse/KEY)`), **Title/Summary**, **Project**, **Type**, **Status**, **Priority**, **Reporter/Assignee**, and any relevant **Description** or **Comments**.
+   - Format Jira issues in a clean Markdown table or structured bullet list including the **Issue Key** (as a clickable link `[KEY]({_CONFIG.jira_instance_uri.rstrip('/')}/browse/KEY)`), **Title/Summary**, **Project**, **Type**, **Status**, **Priority**, **Reporter/Assignee**, and any relevant **Description** or **Comments**.
 """
 
 root_agent = LlmAgent(

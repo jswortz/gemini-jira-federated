@@ -30,44 +30,60 @@ _ORDER_BY_RE = re.compile(r"\s+ORDER\s+BY\s+.*$", re.IGNORECASE)
 
 @dataclass(frozen=True)
 class ConnectorConfig:
-    """Configuration for the Gemini Enterprise Jira Federated Data Connector."""
+    """Configuration for the Gemini Enterprise Jira Federated Data Connector.
+
+    All properties are loaded dynamically from environment variables (.env).
+    """
 
     project_id: str = field(
-        default_factory=lambda: os.getenv(
-            "DISCOVERY_ENGINE_PROJECT_ID", "wortz-project-352116"
+        default_factory=lambda: (
+            os.getenv("DISCOVERY_ENGINE_PROJECT_ID")
+            or os.getenv("GOOGLE_CLOUD_PROJECT", "")
         )
     )
     project_number: str = field(
-        default_factory=lambda: os.getenv(
-            "DISCOVERY_ENGINE_PROJECT_NUMBER", "679926387543"
-        )
+        default_factory=lambda: os.getenv("DISCOVERY_ENGINE_PROJECT_NUMBER", "")
     )
     location: str = field(
-        default_factory=lambda: os.getenv("DISCOVERY_ENGINE_LOCATION", "global")
+        default_factory=lambda: (
+            os.getenv("DISCOVERY_ENGINE_LOCATION")
+            or os.getenv("GOOGLE_CLOUD_LOCATION")
+            or "global"
+        )
     )
     engine_id: str = field(
-        default_factory=lambda: os.getenv(
-            "DISCOVERY_ENGINE_ID", "ge-jira-vpcsc-app"
-        )
+        default_factory=lambda: os.getenv("DISCOVERY_ENGINE_ID", "")
     )
     collection_id: str = field(
-        default_factory=lambda: os.getenv(
-            "JIRA_CONNECTOR_COLLECTION_ID", "jira-federated_1782320633397"
-        )
+        default_factory=lambda: os.getenv("JIRA_CONNECTOR_COLLECTION_ID", "")
     )
     jira_instance_uri: str = field(
-        default_factory=lambda: os.getenv(
-            "JIRA_INSTANCE_URI", "https://jwortz.atlassian.net"
-        )
+        default_factory=lambda: os.getenv("JIRA_INSTANCE_URI", "")
     )
     model: str = field(
         default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     )
     oauth_user_account: str = field(
-        default_factory=lambda: os.getenv(
-            "OAUTH_USER_ACCOUNT", "admin@jwortz.altostrat.com"
-        )
+        default_factory=lambda: os.getenv("OAUTH_USER_ACCOUNT", "")
     )
+
+    def validate(self) -> None:
+        """Validates that all required environment variables are set in .env."""
+        missing: list[str] = []
+        if not self.project_id:
+            missing.append("DISCOVERY_ENGINE_PROJECT_ID / GOOGLE_CLOUD_PROJECT")
+        if not self.project_number:
+            missing.append("DISCOVERY_ENGINE_PROJECT_NUMBER")
+        if not self.engine_id:
+            missing.append("DISCOVERY_ENGINE_ID")
+        if not self.collection_id:
+            missing.append("JIRA_CONNECTOR_COLLECTION_ID")
+        if not self.jira_instance_uri:
+            missing.append("JIRA_INSTANCE_URI")
+        if missing:
+            raise ValueError(
+                f"Missing required environment variables in .env: {', '.join(missing)}"
+            )
 
     @property
     def base_api_url(self) -> str:

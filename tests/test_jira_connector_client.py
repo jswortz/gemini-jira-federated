@@ -25,7 +25,7 @@ def test_check_oauth_status_authorized():
                 200,
                 {
                     "refreshTokenInfo": {
-                        "name": "projects/wortz-project-352116/locations/global/collections/jira-federated_1782320633397/dataConnector",
+                        "name": client.config.data_connector_name,
                         "scopes": ["read:jira-work", "offline_access"],
                     }
                 },
@@ -36,7 +36,7 @@ def test_check_oauth_status_authorized():
                 {
                     "collectionComponents": [
                         {
-                            "id": "jira-federated_1782320633397",
+                            "id": client.config.collection_id,
                             "connectorAuthState": {
                                 "authState": "AUTHORIZED",
                                 "authorizationUri": "https://auth.atlassian.com/authorize?client_id=test",
@@ -79,7 +79,7 @@ def test_search_issues_parses_mcp_payload():
                     "reporter_name": "Jeremy Wortz",
                     "created": "2026-08-25T11:18:21.461-0500",
                     "updated": "2026-08-25T11:37:39.243-0500",
-                    "url": "https://jwortz.atlassian.net/browse/GEAP-3",
+                    "url": f"{client.config.jira_instance_uri}/browse/GEAP-3",
                     "comments": [
                         {
                             "authorDisplayName": "Jeremy Wortz",
@@ -123,7 +123,7 @@ def test_search_issues_parses_mcp_payload():
         issue = res["issues"][0]
         assert issue["key"] == "GEAP-3"
         assert issue["title"] == "VPC-SC connector test (updated)"
-        assert issue["url"] == "https://jwortz.atlassian.net/browse/GEAP-3"
+        assert issue["url"] == f"{client.config.jira_instance_uri}/browse/GEAP-3"
         assert (
             "Automated test comment from Gemini Enterprise behind VPC-SC."
             in issue["comments"][0]["text"]
@@ -142,7 +142,7 @@ def test_list_projects_parses_entities():
                         "Name": "Grocery-store",
                         "ProjectTypeKey": "software",
                         "LeadDisplayName": "Jeremy Wortz",
-                        "ItemURL": "https://jwortz.atlassian.net/jira/software/c/projects/CCS/issues",
+                        "ItemURL": f"{client.config.jira_instance_uri}/jira/software/c/projects/CCS/issues",
                     }
                 }
             ]
