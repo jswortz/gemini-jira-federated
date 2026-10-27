@@ -161,3 +161,43 @@ def test_list_projects_parses_entities():
         assert res["status"] == "success"
         assert res["projects"][0]["key"] == "CCS"
         assert res["projects"][0]["name"] == "Grocery-store"
+
+
+def test_stream_assist_parses_chunks():
+    client = JiraFederatedConnectorClient(config=ConnectorConfig())
+    stream_payload = [
+        {
+            "answer": {
+                "replies": [
+                    {
+                        "groundedContent": {
+                            "content": {
+                                "text": "Here are 5 issues from project CCS with links."
+                            }
+                        }
+                    }
+                ],
+                "citations": {
+                    "groundingChunks": [
+                        {
+                            "web": {
+                                "uri": f"{client.config.jira_instance_uri}/browse/CCS-50"
+                            }
+                        }
+                    ]
+                },
+            }
+        }
+    ]
+
+    with patch.object(
+        client._session, "request", return_value=_mock_response(200, stream_payload)
+    ):
+        res = client.stream_assist(
+            access_token="google-user-oauth-token",
+            query="list 5 issues from CCS",
+        )
+        assert res["status"] == "success"
+        assert res["answer"] == "Here are 5 issues from project CCS with links."
+        assert res["grounding_chunks_count"] == 1
+        assert len(res["datastores_queried"]) == 10

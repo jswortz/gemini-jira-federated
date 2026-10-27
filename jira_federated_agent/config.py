@@ -66,6 +66,9 @@ class ConnectorConfig:
     oauth_user_account: str = field(
         default_factory=lambda: os.getenv("OAUTH_USER_ACCOUNT", "")
     )
+    retrieval_mode: str = field(
+        default_factory=lambda: os.getenv("JIRA_RETRIEVAL_MODE", "mcp").lower()
+    )
 
     def validate(self) -> None:
         """Validates that all required environment variables are set in .env."""
@@ -116,6 +119,10 @@ class ConnectorConfig:
             f"/collections/default_collection/dataStores/{self.collection_id}"
         )
         return [f"{prefix}_{entity}" for entity in JIRA_ENTITIES]
+
+    @property
+    def stream_assist_url(self) -> str:
+        return f"{self.base_api_url}/{self.engine_name}/assistants/default_assistant:streamAssist"
 
     @property
     def console_connector_url(self) -> str:

@@ -26,6 +26,8 @@ def test_connector_config_defaults():
     assert cfg.collection_id
     assert cfg.data_connector_name.startswith("projects/")
     assert len(cfg.entity_data_stores) == 10
+    assert cfg.retrieval_mode in ("mcp", "stream_assist")
+    assert "assistants/default_assistant:streamAssist" in cfg.stream_assist_url
 
 
 def test_connector_config_custom_env(monkeypatch):
@@ -36,6 +38,7 @@ def test_connector_config_custom_env(monkeypatch):
     monkeypatch.setenv("JIRA_CONNECTOR_COLLECTION_ID", "custom-connector")
     monkeypatch.setenv("JIRA_INSTANCE_URI", "https://custom.atlassian.net")
     monkeypatch.setenv("OAUTH_USER_ACCOUNT", "custom@example.com")
+    monkeypatch.setenv("JIRA_RETRIEVAL_MODE", "stream_assist")
 
     cfg = ConnectorConfig()
     cfg.validate()
@@ -46,6 +49,7 @@ def test_connector_config_custom_env(monkeypatch):
     assert cfg.collection_id == "custom-connector"
     assert cfg.jira_instance_uri == "https://custom.atlassian.net"
     assert cfg.oauth_user_account == "custom@example.com"
+    assert cfg.retrieval_mode == "stream_assist"
     assert (
         cfg.data_connector_name
         == "projects/999999999/locations/us-central1/collections/custom-connector/dataConnector"

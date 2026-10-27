@@ -379,3 +379,98 @@ class JiraFederatedConnectorClient:
             "count": len(projects),
             "projects": projects,
         }
+
+    def stream_assist(
+        self,
+        access_token: str,
+        query: str,
+        data_store_specs: list[str] | None = None,
+        timeout: float = 60.0,
+    ) -> dict[str, Any]:
+        """Queries the Gemini Enterprise native :streamAssist assistant API.
+
+        Queries across all 10 per-entity data stores using the caller's OAuth token,
+        leveraging Gemini Enterprise's built-in federated retrieval, grounding attribution
+        tokens, and answer synthesis.
+        """
+        if not query or not query.strip():
+            raise ValueError("Missing query for stream_assist.")
+
+        # Must attach all 10 entity datastores to prevent silent zero results
+        specs = [
+            {"dataStore": ds}
+            for ds in (data_store_specs or self.config.entity_data_stores)
+        ]
+
+        body: dict[str, Any] = {
+            "query": {"parts": [{"text": query.strip()}]},
+            "answerGenerationMode": "NORMAL",
+            "toolsSpec": {
+                "vertexAiSearchSpec": {"dataStoreSpecs": specs},
+                "toolRegistry": "default_tool_registry",
+            },
+            "assistSkippingMode": "REQUEST_ASSIST",
+            "languageCode": "en-US",
+        }
+
+        url = self.config.stream_assist_url
+        resp = self._session.request(
+            "POST",
+            url,
+            headers=self._headers(access_token),
+            json=body,
+            timeout=timeout,
+        )
+
+        if not resp.ok:
+            return {
+                "status": "error",
+                "http_status": resp.status_code,
+                "message": f"Discovery Engine StreamAssist returned HTTP {resp.status_code}.",
+                "details": resp.text,
+            }
+
+        # Parse streaming chunks
+        answer_text_parts: list[str] = []
+        grounding_chunks: list[dict[str, Any]] = []
+
+        try:
+            chunks = resp.json()
+            if not isinstance(chunks, list):
+                chunks = [chunks]
+        except Exception:
+            chunks = []
+            for line in resp.text.splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        chunks.append(json.loads(line))
+                    except Exception:
+                        pass
+
+        for c in chunks:
+            if not isinstance(c, dict):
+                continue
+            for reply in c.get("answer", {}).get("replies", []):
+                text = (
+                    reply.get("groundedContent", {})
+                    .get("content", {})
+                    .get("text", "")
+                )
+                if text:
+                    answer_text_parts.append(text)
+            for chunk in (
+                c.get("answer", {}).get("citations", {}).get("groundingChunks", [])
+                or []
+            ):
+                if isinstance(chunk, dict):
+                    grounding_chunks.append(chunk)
+
+        return {
+            "status": "success",
+            "query": query.strip(),
+            "answer": "".join(answer_text_parts),
+            "grounding_chunks_count": len(grounding_chunks),
+            "grounding_chunks": grounding_chunks,
+            "datastores_queried": [s["dataStore"] for s in specs],
+        }

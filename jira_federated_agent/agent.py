@@ -175,6 +175,34 @@ def get_jira_issue(
     return _CLIENT.get_issue(access_token=token, issue_key=issue_key)
 
 
+def ask_gemini_enterprise_jira(
+    question: str,
+    tool_context: ToolContext | None = None,
+) -> dict[str, Any]:
+    """Queries Gemini Enterprise's native assistant service (:streamAssist) over all 10 federated Jira data stores.
+
+    Leverages Gemini Enterprise's built-in query rewriting, multi-entity blended search,
+    grounding attribution tokens, and answer synthesis across issues, comments, projects,
+    attachments, epics, stories, bugs, tasks, worklogs, and boards.
+
+    Args:
+        question: Natural language question (e.g. 'What is the status of the Snowflake migration?'
+            or 'What comments does GEAP-3 have?').
+    """
+    token, auth_source = resolve_user_oauth_token(
+        tool_context=tool_context,
+        account=_CONFIG.oauth_user_account,
+        project_id=_CONFIG.project_id,
+    )
+    if not token:
+        return {
+            "status": "auth_required",
+            "auth_source": auth_source,
+            "message": "User OAuth authentication is required before querying Gemini Enterprise.",
+        }
+    return _CLIENT.stream_assist(access_token=token, query=question)
+
+
 AGENT_INSTRUCTION = f"""You are a Grounded Jira Assistant powered by Google ADK and the Gemini Enterprise Federated Jira Data Connector.
 
 ### Connected Data Source
@@ -183,10 +211,12 @@ AGENT_INSTRUCTION = f"""You are a Grounded Jira Assistant powered by Google ADK 
 - **Federated Connector Collection**: `{_CONFIG.collection_id}` (`THIRD_PARTY_FEDERATED`)
 - **Data Connector Resource**: `{_CONFIG.data_connector_name}`
 - **Atlassian Jira Cloud Instance**: `{_CONFIG.jira_instance_uri}`
+- **Active Retrieval Mode**: `{_CONFIG.retrieval_mode}`
 
 ### Operational Rules
 1. **Always Ground Responses in Live Federated Data**:
    - Use `search_jira_issues`, `get_jira_issue`, and `list_jira_projects` to retrieve live Jira tickets and projects from the federated connector.
+   - For high-level synthesis questions requiring blended answers across all 10 entities (issues, comments, boards, projects), use `ask_gemini_enterprise_jira`.
    - If a user asks to "list all Jira issues" or "what Jira issues can you see?", call `search_jira_issues(query="", max_results=20)` with an empty `query` to retrieve the latest issues across all projects.
 2. **OAuth Verification & Consent Handling**:
    - When asked about authentication status or if a tool reports an authorization error, call `check_jira_oauth_status()`.
@@ -209,5 +239,6 @@ root_agent = LlmAgent(
         list_jira_projects,
         search_jira_issues,
         get_jira_issue,
+        ask_gemini_enterprise_jira,
     ],
 )
