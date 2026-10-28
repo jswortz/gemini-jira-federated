@@ -2,7 +2,8 @@
 
 This repository demonstrates how to build a grounded **Google Agent Development Kit (ADK)** agent over a **Gemini Enterprise (Discovery Engine) Federated Jira Data Connector** (`connectorType: "THIRD_PARTY_FEDERATED"`) using **end-user OAuth2 authentication (3-Legged OAuth / 3LO)** backed by **Google Cloud IAM Auth Manager** and **Google Cloud Secret Manager**.
 
-![ADK Web UI with Jira Federated Agent](assets/adk_web_jira_agent.png)
+![Gemini Enterprise Live Chat with Federated Jira MCP](assets/gemini_enterprise_jira_mcp.png)
+*Live Grounded Jira Issue Retrieval in Gemini Enterprise using Direct Federated MCP (`dataConnector:invokeConnectorMcp`)*
 
 ---
 
@@ -409,6 +410,9 @@ uv run pytest -v
 uv run adk web --host 127.0.0.1 --port 8000
 ```
 Open **`http://127.0.0.1:8000/dev-ui/?app=jira_federated_agent`** in your browser.
+
+![ADK Web UI with Jira Federated Agent](assets/adk_web_jira_agent.png)
+*Local Interactive 3-Legged OAuth & Agent Execution in ADK Web Dev UI*
 
 ---
 
