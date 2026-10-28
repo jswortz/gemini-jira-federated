@@ -69,73 +69,275 @@ class JiraFederatedConnectorClient:
             "Content-Type": "application/json",
         }
 
-    def check_oauth_status(self, access_token: str) -> dict[str, Any]:
-        """Checks the user's 3LO Jira OAuth status in the Discovery Engine connector vault.
-
-        Queries:
-        1. GET .../dataConnector:checkRefreshToken
-        2. GET .../widgetConfigs/default_search_widget_config (for authorizationUri & authState)
-        3. POST .../dataConnector:acquireAccessToken (to verify live Atlassian 3LO token)
-        """
-        headers = self._headers(access_token)
-        base = self.config.base_api_url
-        connector_path = self.config.data_connector_name
-
-        # 1. Check refresh token metadata
-        check_url = f"{base}/{connector_path}:checkRefreshToken"
-        check_resp = self._session.request(
-            "GET", check_url, headers=headers, timeout=self.timeout
-        )
-        check_data = check_resp.json() if check_resp.ok else {}
-        scopes = check_data.get("refreshTokenInfo", {}).get("scopes", [])
-
-        # 2. Fetch widget config for connectorAuthState & Atlassian 3LO authorizationUri
-        widget_url = f"{base}/{self.config.widget_config_name}"
-        widget_resp = self._session.request(
-            "GET", widget_url, headers=headers, timeout=self.timeout
-        )
-        auth_state = "UNKNOWN"
-        authorization_uri = ""
-        if widget_resp.ok:
-            widget_data = widget_resp.json()
-            for comp in widget_data.get("collectionComponents", []):
-                if comp.get("id") == self.config.collection_id:
-                    conn_auth = comp.get("connectorAuthState", {})
-                    auth_state = conn_auth.get("authState", "UNKNOWN")
-                    authorization_uri = conn_auth.get("authorizationUri", "")
-                    break
-
-        # 3. Verify live 3LO token acquisition from Discovery Engine userStores
-        acquire_url = f"{base}/{connector_path}:acquireAccessToken"
-        acquire_resp = self._session.request(
-            "POST", acquire_url, headers=headers, json={}, timeout=self.timeout
-        )
-        acquire_data = acquire_resp.json() if acquire_resp.ok else {}
-        has_3lo_token = bool(acquire_data.get("accessToken"))
-        if not scopes and acquire_data.get("refreshTokenInfo"):
-            scopes = acquire_data["refreshTokenInfo"].get("scopes", [])
-
-        authorized = bool(has_3lo_token or auth_state == "AUTHORIZED")
+    def _atlassian_headers(self, access_token: str) -> dict[str, str]:
+        if not access_token or not access_token.strip():
+            raise ValueError("Missing OAuth2 access token.")
         return {
-            "authorized": authorized,
-            "auth_state": auth_state,
-            "has_active_3lo_token": has_3lo_token,
-            "scopes": scopes,
-            "connector": connector_path,
-            "engine": self.config.engine_name,
-            "jira_instance_uri": self.config.jira_instance_uri,
-            "console_url": self.config.console_connector_url,
-            "authorization_uri": authorization_uri,
-            "instructions_if_unauthorized": (
-                None
-                if authorized
-                else (
-                    "Open the authorization_uri in your browser to authorize Jira Cloud "
-                    "with your Atlassian account, then pass the resulting redirect URL "
-                    "(https://vertexaisearch.cloud.google.com/oauth-redirect?code=...) "
-                    "to complete_jira_oauth_consent()."
+            "Authorization": f"Bearer {access_token.strip()}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+    def _get_atlassian_cloud_id(self, access_token: str) -> str | None:
+        """Fetches accessible resources from Atlassian OAuth endpoint to find cloudId."""
+        try:
+            resp = self._session.get(
+                "https://api.atlassian.com/oauth/token/accessible-resources",
+                headers=self._atlassian_headers(access_token),
+                timeout=self.timeout,
+            )
+            if not resp.ok:
+                return None
+            resources = resp.json()
+            if not isinstance(resources, list) or not resources:
+                return None
+            target = (self.config.jira_instance_uri or "").rstrip("/")
+            for r in resources:
+                if isinstance(r, dict) and r.get("url", "").rstrip("/") == target:
+                    return r.get("id")
+            return resources[0].get("id") if isinstance(resources[0], dict) else None
+        except Exception:
+            return None
+
+    def _search_issues_atlassian_rest(
+        self,
+        access_token: str,
+        cloud_id: str,
+        safe_jql: str = "",
+        max_results: int = 20,
+    ) -> dict[str, Any]:
+        """Queries Atlassian Cloud REST API directly using an Atlassian 3LO token."""
+        url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search"
+        params: dict[str, Any] = {
+            "maxResults": max_results,
+            "fields": [
+                "summary",
+                "status",
+                "issuetype",
+                "priority",
+                "project",
+                "assignee",
+                "reporter",
+                "creator",
+                "created",
+                "updated",
+                "comment",
+                "description",
+            ],
+        }
+        if safe_jql:
+            params["jql"] = safe_jql
+
+        resp = self._session.get(
+            url,
+            headers=self._atlassian_headers(access_token),
+            params=params,
+            timeout=self.timeout,
+        )
+        if not resp.ok:
+            return {
+                "status": "error",
+                "http_status": resp.status_code,
+                "message": f"Atlassian Jira REST API returned HTTP {resp.status_code}.",
+            }
+        data = resp.json()
+        raw_issues = data.get("issues", [])
+        normalized: list[dict[str, Any]] = []
+        for issue in raw_issues:
+            if not isinstance(issue, dict):
+                continue
+            fields = issue.get("fields", {}) or {}
+            comments_out: list[dict[str, str]] = []
+            c_block = fields.get("comment", {}) or {}
+            for c in c_block.get("comments", []) if isinstance(c_block, dict) else []:
+                if isinstance(c, dict):
+                    author = c.get("author", {}) if isinstance(c.get("author"), dict) else {}
+                    comments_out.append(
+                        {
+                            "author": author.get("displayName", "Unknown"),
+                            "created": c.get("created", ""),
+                            "text": _extract_adf_text(c.get("body")),
+                        }
+                    )
+            proj = fields.get("project", {}) if isinstance(fields.get("project"), dict) else {}
+            stat = fields.get("status", {}) if isinstance(fields.get("status"), dict) else {}
+            itype = fields.get("issuetype", {}) if isinstance(fields.get("issuetype"), dict) else {}
+            prio = fields.get("priority", {}) if isinstance(fields.get("priority"), dict) else {}
+            assignee = fields.get("assignee", {}) if isinstance(fields.get("assignee"), dict) else {}
+            reporter = fields.get("reporter", {}) if isinstance(fields.get("reporter"), dict) else {}
+            creator = fields.get("creator", {}) if isinstance(fields.get("creator"), dict) else {}
+            key = issue.get("key", "")
+            normalized.append(
+                {
+                    "key": key,
+                    "issue_id": issue.get("id", ""),
+                    "title": fields.get("summary", ""),
+                    "status": stat.get("name", ""),
+                    "priority": prio.get("name", ""),
+                    "issue_type": itype.get("name", ""),
+                    "project_key": proj.get("key", ""),
+                    "project_name": proj.get("name", ""),
+                    "assignee": assignee.get("displayName") or assignee.get("emailAddress") or "Unassigned",
+                    "reporter": reporter.get("displayName") or reporter.get("emailAddress") or "",
+                    "creator": creator.get("displayName") or creator.get("emailAddress") or "",
+                    "created": fields.get("created", ""),
+                    "updated": fields.get("updated", ""),
+                    "description": _extract_adf_text(fields.get("description")),
+                    "url": f"{self.config.jira_instance_uri.rstrip('/')}/browse/{key}",
+                    "comments": comments_out,
+                }
+            )
+        return {
+            "status": "success",
+            "source": "atlassian_cloud_rest",
+            "jql_executed": safe_jql or "(all issues ordered by created DESC)",
+            "count": len(normalized),
+            "issues": normalized,
+        }
+
+    def _get_issue_atlassian_rest(
+        self, access_token: str, cloud_id: str, issue_key: str
+    ) -> dict[str, Any]:
+        """Fetches full details of a single Jira issue directly from Atlassian Cloud REST API."""
+        search_res = self._search_issues_atlassian_rest(
+            access_token=access_token,
+            cloud_id=cloud_id,
+            safe_jql=f'key = "{issue_key}"',
+            max_results=1,
+        )
+        if search_res.get("status") == "success" and search_res.get("issues"):
+            return {
+                "status": "success",
+                "source": "atlassian_cloud_rest",
+                "issue": search_res["issues"][0],
+            }
+        return {
+            "status": "error",
+            "message": f"Issue '{issue_key}' not found or not accessible.",
+        }
+
+    def _list_projects_atlassian_rest(
+        self, access_token: str, cloud_id: str, query: str = ""
+    ) -> dict[str, Any]:
+        """Lists Jira projects directly from Atlassian Cloud REST API."""
+        url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/project/search"
+        params: dict[str, Any] = {"maxResults": 50}
+        if query:
+            params["query"] = query.strip()
+        resp = self._session.get(
+            url,
+            headers=self._atlassian_headers(access_token),
+            params=params,
+            timeout=self.timeout,
+        )
+        if not resp.ok:
+            return {
+                "status": "error",
+                "http_status": resp.status_code,
+                "message": f"Atlassian Projects API returned HTTP {resp.status_code}.",
+            }
+        data = resp.json()
+        raw_projs = data.get("values", [])
+        normalized: list[dict[str, Any]] = []
+        for p in raw_projs:
+            if isinstance(p, dict):
+                normalized.append(
+                    {
+                        "key": p.get("key", ""),
+                        "name": p.get("name", ""),
+                        "project_type": p.get("projectTypeKey", ""),
+                        "id": p.get("id", ""),
+                    }
                 )
-            ),
+        return {
+            "status": "success",
+            "source": "atlassian_cloud_rest",
+            "count": len(normalized),
+            "projects": normalized,
+        }
+
+    def check_oauth_status(self, access_token: str) -> dict[str, Any]:
+        """Checks the user's 3LO Jira OAuth status."""
+        try:
+            headers = self._headers(access_token)
+            base = self.config.base_api_url
+            connector_path = self.config.data_connector_name
+
+            # 1. Check refresh token metadata
+            check_url = f"{base}/{connector_path}:checkRefreshToken"
+            check_resp = self._session.request(
+                "GET", check_url, headers=headers, timeout=self.timeout
+            )
+            if check_resp.ok:
+                check_data = check_resp.json()
+                scopes = check_data.get("refreshTokenInfo", {}).get("scopes", [])
+
+                # 2. Fetch widget config for connectorAuthState & Atlassian 3LO authorizationUri
+                widget_url = f"{base}/{self.config.widget_config_name}"
+                widget_resp = self._session.request(
+                    "GET", widget_url, headers=headers, timeout=self.timeout
+                )
+                auth_state = "UNKNOWN"
+                authorization_uri = ""
+                if widget_resp.ok:
+                    widget_data = widget_resp.json()
+                    for comp in widget_data.get("collectionComponents", []):
+                        if comp.get("id") == self.config.collection_id:
+                            conn_auth = comp.get("connectorAuthState", {})
+                            auth_state = conn_auth.get("authState", "UNKNOWN")
+                            authorization_uri = conn_auth.get("authorizationUri", "")
+                            break
+
+                # 3. Verify live 3LO token acquisition from Discovery Engine userStores
+                acquire_url = f"{base}/{connector_path}:acquireAccessToken"
+                acquire_resp = self._session.request(
+                    "POST", acquire_url, headers=headers, json={}, timeout=self.timeout
+                )
+                acquire_data = acquire_resp.json() if acquire_resp.ok else {}
+                has_3lo_token = bool(acquire_data.get("accessToken"))
+                if not scopes and acquire_data.get("refreshTokenInfo"):
+                    scopes = acquire_data["refreshTokenInfo"].get("scopes", [])
+
+                authorized = bool(has_3lo_token or auth_state == "AUTHORIZED")
+                effective_auth_uri = authorization_uri or self.config.default_atlassian_auth_uri
+                return {
+                    "authorized": authorized,
+                    "auth_state": auth_state,
+                    "has_active_3lo_token": has_3lo_token,
+                    "scopes": scopes,
+                    "connector": connector_path,
+                    "engine": self.config.engine_name,
+                    "jira_instance_uri": self.config.jira_instance_uri,
+                    "console_url": self.config.console_connector_url,
+                    "authorization_uri": effective_auth_uri,
+                    "instructions_if_unauthorized": (
+                        None
+                        if authorized
+                        else (
+                            f"Open {effective_auth_uri} to complete Atlassian 3LO authorization."
+                        )
+                    ),
+                }
+        except Exception:
+            pass
+
+        # Direct Atlassian 3LO verification
+        cloud_id = self._get_atlassian_cloud_id(access_token)
+        if cloud_id:
+            return {
+                "authorized": True,
+                "auth_type": "atlassian_3lo",
+                "cloud_id": cloud_id,
+                "user_has_stored_refresh_token": True,
+                "scopes": ["offline_access", "read:jira-user", "read:jira-work", "read:issue:jira"],
+                "message": "User is authenticated with Atlassian Jira Cloud 3LO.",
+            }
+        return {
+            "authorized": False,
+            "auth_type": "atlassian_3lo",
+            "user_has_stored_refresh_token": False,
+            "authorization_uri": self.config.default_atlassian_auth_uri,
+            "message": "Atlassian OAuth token is invalid or expired. Re-authentication required.",
         }
 
     def complete_oauth_consent(
@@ -246,6 +448,7 @@ class JiraFederatedConnectorClient:
             issue_type=issue_type,
         )
         capped_results = max(1, min(int(max_results), 50))
+
         args: dict[str, Any] = {
             "expanded_view": False,
             "maxResults": capped_results,
@@ -254,8 +457,18 @@ class JiraFederatedConnectorClient:
         if safe_jql:
             args["query"] = safe_jql
 
+        # 1. Try Discovery Engine Federated Connector MCP
         mcp_res = self.invoke_mcp_tool(access_token, "search_issues", args)
         if mcp_res.get("status") != "success":
+            # 2. Fallback to direct Atlassian 3LO REST if token is Atlassian
+            cloud_id = self._get_atlassian_cloud_id(access_token)
+            if cloud_id:
+                return self._search_issues_atlassian_rest(
+                    access_token=access_token,
+                    cloud_id=cloud_id,
+                    safe_jql=safe_jql,
+                    max_results=capped_results,
+                )
             return mcp_res
 
         raw_data = mcp_res.get("data", {})
@@ -322,7 +535,8 @@ class JiraFederatedConnectorClient:
     def get_issue(self, access_token: str, issue_key: str) -> dict[str, Any]:
         """Retrieves full details for a single Jira issue by key (e.g. 'GEAP-3' or 'CCS-50')."""
         valid_key = validate_issue_key(issue_key)
-        # First query compact/expanded search for normalized fields + comments
+
+        # 1. First query compact/expanded search for normalized fields + comments
         search_res = self.search_issues(
             access_token=access_token,
             jql=f'key = "{valid_key}"',
@@ -335,8 +549,19 @@ class JiraFederatedConnectorClient:
                 "issue": search_res["issues"][0],
             }
 
-        # Fallback to direct get_issue tool
+        # 2. Try direct get_issue tool
         mcp_res = self.invoke_mcp_tool(access_token, "get_issue", {"Id": valid_key})
+        if mcp_res.get("status") == "success":
+            return mcp_res
+
+        # 3. Fallback to direct Atlassian 3LO REST
+        cloud_id = self._get_atlassian_cloud_id(access_token)
+        if cloud_id:
+            return self._get_issue_atlassian_rest(
+                access_token=access_token,
+                cloud_id=cloud_id,
+                issue_key=valid_key,
+            )
         return mcp_res
 
     def list_projects(
@@ -355,6 +580,13 @@ class JiraFederatedConnectorClient:
             )
 
         if mcp_res.get("status") != "success":
+            cloud_id = self._get_atlassian_cloud_id(access_token)
+            if cloud_id:
+                return self._list_projects_atlassian_rest(
+                    access_token=access_token,
+                    cloud_id=cloud_id,
+                    query=query,
+                )
             return mcp_res
 
         raw_data = mcp_res.get("data", {})

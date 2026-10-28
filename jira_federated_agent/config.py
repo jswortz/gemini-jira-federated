@@ -72,6 +72,12 @@ class ConnectorConfig:
     retrieval_mode: str = field(
         default_factory=lambda: os.getenv("JIRA_RETRIEVAL_MODE", "mcp").lower()
     )
+    authorization_id: str = field(
+        default_factory=lambda: os.getenv("JIRA_AUTHORIZATION_ID", "jira-oauth-provider")
+    )
+    jira_client_id: str = field(
+        default_factory=lambda: os.getenv("JIRA_OAUTH_CLIENT_ID", "")
+    )
 
     def validate(self) -> None:
         """Validates that all required environment variables are set in .env."""
@@ -133,6 +139,21 @@ class ConnectorConfig:
             f"https://console.cloud.google.com/gemini-enterprise/locations/{self.location}"
             f"/engines/{self.engine_id}/collections/{self.collection_id}"
             f"/connector/details?project={self.project_id}"
+        )
+
+    @property
+    def authorization_name(self) -> str:
+        return f"projects/{self.project_number}/locations/{self.location}/authorizations/{self.authorization_id}"
+
+    @property
+    def default_atlassian_auth_uri(self) -> str:
+        client_id_param = f"&client_id={self.jira_client_id}" if self.jira_client_id else ""
+        return (
+            "https://auth.atlassian.com/authorize?audience=api.atlassian.com"
+            f"{client_id_param}"
+            "&scope=offline_access%20read%3Ajira-user%20read%3Ajira-work%20read%3Aissue%3Ajira"
+            "&redirect_uri=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fstatic%2Foauth%2Foauth.html"
+            "&response_type=code&prompt=consent"
         )
 
 

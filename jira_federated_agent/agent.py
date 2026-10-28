@@ -62,9 +62,11 @@ def check_jira_oauth_status(
         return {
             "authorized": False,
             "auth_source": auth_source,
+            "authorization_uri": _CONFIG.default_atlassian_auth_uri,
             "message": (
-                "Pending user OAuth authentication. Please complete the OAuth login "
-                "prompt or authenticate via gcloud."
+                "User OAuth authentication is required to access Jira issues. "
+                "Please authenticate using the login card in the chat, or open this authorization URL:\n"
+                f"{_CONFIG.default_atlassian_auth_uri}"
             ),
         }
 
@@ -119,7 +121,12 @@ def list_jira_projects(
         return {
             "status": "auth_required",
             "auth_source": auth_source,
-            "message": "User OAuth authentication is required before querying Jira projects.",
+            "authorization_uri": _CONFIG.default_atlassian_auth_uri,
+            "message": (
+                "User OAuth authentication is required before querying Jira projects. "
+                "Please authenticate using the login card in the chat, or open this authorization URL:\n"
+                f"{_CONFIG.default_atlassian_auth_uri}"
+            ),
         }
     return _CLIENT.list_projects(access_token=token, query=query)
 
@@ -155,7 +162,12 @@ def search_jira_issues(
         return {
             "status": "auth_required",
             "auth_source": auth_source,
-            "message": "User OAuth authentication is required before searching Jira issues.",
+            "authorization_uri": _CONFIG.default_atlassian_auth_uri,
+            "message": (
+                "User OAuth authentication is required before searching Jira issues. "
+                "Please authenticate using the login card in the chat, or open this authorization URL:\n"
+                f"{_CONFIG.default_atlassian_auth_uri}"
+            ),
         }
     return _CLIENT.search_issues(
         access_token=token,
@@ -186,7 +198,12 @@ def get_jira_issue(
         return {
             "status": "auth_required",
             "auth_source": auth_source,
-            "message": "User OAuth authentication is required before fetching a Jira issue.",
+            "authorization_uri": _CONFIG.default_atlassian_auth_uri,
+            "message": (
+                f"User OAuth authentication is required before fetching Jira issue '{issue_key}'. "
+                "Please authenticate using the login card in the chat, or open this authorization URL:\n"
+                f"{_CONFIG.default_atlassian_auth_uri}"
+            ),
         }
     return _CLIENT.get_issue(access_token=token, issue_key=issue_key)
 
@@ -214,7 +231,12 @@ def ask_gemini_enterprise_jira(
         return {
             "status": "auth_required",
             "auth_source": auth_source,
-            "message": "User OAuth authentication is required before querying Gemini Enterprise.",
+            "authorization_uri": _CONFIG.default_atlassian_auth_uri,
+            "message": (
+                "User OAuth authentication is required before querying Gemini Enterprise. "
+                "Please authenticate using the login card in the chat, or open this authorization URL:\n"
+                f"{_CONFIG.default_atlassian_auth_uri}"
+            ),
         }
     return _CLIENT.stream_assist(access_token=token, query=question)
 

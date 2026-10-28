@@ -74,18 +74,47 @@ def extract_token_from_tool_context(tool_context: ToolContext | Any | None) -> s
 
     # 2. Check ADK get_credential (Agent Platform / Auth Manager)
     if hasattr(tool_context, "get_credential"):
-        for cred_key in (CREDENTIAL_KEY, "jira_federated_google_oauth", "gemini_enterprise_oauth"):
+        for cred_key in (
+            "jira-oauth-provider",
+            "jira_oauth_provider",
+            "jira-oauth",
+            "jira_oauth",
+            CREDENTIAL_KEY,
+            "jira_federated_google_oauth",
+            "gemini_enterprise_oauth",
+        ):
             try:
                 cred = tool_context.get_credential(cred_key)
-                if cred and getattr(cred, "oauth2", None) and getattr(cred.oauth2, "access_token", None):
-                    token = str(cred.oauth2.access_token)
-                    if isinstance(state, dict):
-                        state[STATE_TOKEN_KEY] = token
-                    return token
+                if cred:
+                    # Check oauth2.access_token attribute
+                    token = getattr(getattr(cred, "oauth2", None), "access_token", None)
+                    if not token:
+                        token = getattr(cred, "access_token", None) or getattr(cred, "token", None)
+                    if not token and isinstance(cred, dict):
+                        token = cred.get("access_token") or cred.get("token")
+                    if token:
+                        token_str = str(token)
+                        if isinstance(state, dict):
+                            state[STATE_TOKEN_KEY] = token_str
+                        return token_str
             except Exception:
                 pass
 
-    # 3. Check ADK AuthConfig exchange response if interactive OAuth was used
+    # 3. Check direct authorizations map on ToolContext or invocation context
+    for auth_attr in ("authorizations", "_authorizations", "credentials"):
+        auth_container = getattr(tool_context, auth_attr, None)
+        if isinstance(auth_container, dict):
+            for k, auth_obj in auth_container.items():
+                token = getattr(auth_obj, "access_token", None) or (
+                    auth_obj.get("access_token") if isinstance(auth_obj, dict) else None
+                )
+                if token:
+                    token_str = str(token)
+                    if isinstance(state, dict):
+                        state[STATE_TOKEN_KEY] = token_str
+                    return token_str
+
+    # 4. Check ADK AuthConfig exchange response if interactive OAuth was used
     if hasattr(tool_context, "get_auth_response"):
         try:
             auth_cfg = build_adk_oauth_config()
