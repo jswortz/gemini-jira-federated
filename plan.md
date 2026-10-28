@@ -1,46 +1,116 @@
-# Implementation Plan: `gemini-jira-federated` ADK RAG Agent
+# Implementation Plan & Architecture: `gemini-jira-federated` ADK RAG Agent
 
 ## 1. Objective
 Build a clean, tested Google ADK repository in `gemini-jira-federated` that demonstrates how to build a grounded RAG agent over the Gemini Enterprise **Federated Jira Data Connector**:
-- **Configuration**: Managed dynamically via `.env` (`DISCOVERY_ENGINE_PROJECT_ID`, `DISCOVERY_ENGINE_ID`, `JIRA_CONNECTOR_COLLECTION_ID`, `JIRA_INSTANCE_URI`, `OAUTH_USER_ACCOUNT`).
+- **Target Engine**: `projects/679926387543/locations/global/collections/default_collection/engines/grocery-workshop-engine`
+- **Target Agent ID**: `projects/679926387543/locations/global/collections/default_collection/engines/grocery-workshop-engine/assistants/default_assistant/agents/16003540595574963813`
 - **Target Location**: `global` (Discovery Engine) / `us-central1` (Vertex AI Gemini)
+- **Delegated Auth Model**: Pattern 2 (Secret Manager + Discovery Engine Authorization Provider + End-User 3LO)
 
-## 2. Technical Architecture
-Because the unified connector is a Federated Connector (`connectorType: "THIRD_PARTY_FEDERATED"`, `connectorModes: ["FEDERATED", "ACTIONS"]`, `incrementalSyncDisabled: true`), zero documents are stored in Branch 0. Instead, Discovery Engine proxies queries at runtime using the end-user's OAuth identity:
+## 2. Technical Architecture & Google Cloud IAM Auth Manager
+
+For detailed Google Cloud conceptual standards on agent authentication brokering, see:
+- [Google Cloud IAM Auth Manager Overview](https://docs.cloud.google.com/iam/docs/auth-manager-overview)
+- [Agent Identity 3-Legged OAuth with Auth Manager](https://cloud.google.com/iam/docs/agent-identity-auth-manager-oauth3)
+- [Manage Agent Identity Auth Providers](https://cloud.google.com/iam/docs/agent-identity-manage-auth-providers)
+
+### System Architecture Diagram
 
 ```mermaid
-flowchart LR
-    User["User in adk web"] -->|"1. Google OAuth2 (EUC / AuthConfig)"| ADK["ADK Agent (jira_federated_agent)"]
-    ADK -->|"2. Check / Acquire 3LO Token\n(:checkRefreshToken / :acquireAccessToken)"| DEAuth["Discovery Engine DataConnector Vault"]
-    ADK -->|"3. Federated RAG Query\n(:invokeConnectorMcp -> search_issues / get_issue)"| DEMcp["Discovery Engine InvokeConnectorMcp"]
-    DEMcp -->|"4. Live 3LO Proxy"| Jira["Atlassian Jira Cloud (<tenant>.atlassian.net)"]
+flowchart TD
+    subgraph Client["Client Tier"]
+        User["End User (admin@jwortz.altostrat.com)"]
+        UI["Gemini Enterprise Chat UI / ADK Web Dev UI"]
+        User -->|"1. User Query"| UI
+    end
+
+    subgraph AgentPlatform["Gemini Enterprise Agent Platform & Vertex AI"]
+        Agent["Jira Federated Agent\n(ADK LlmAgent / Reasoning Engine 1626276928405110784)"]
+        UI -->|"2. StreamAssist"| Agent
+        Tools["Jira Search & MCP Tools"]
+        Agent -->|"3. Call Tool"| Tools
+    end
+
+    subgraph GoogleIAM["Google Cloud IAM Auth Manager & Discovery Engine"]
+        AuthManager["Discovery Engine 3LO Auth Service\n(projects/.../authorizations/jira-oauth-provider)"]
+        Tools -->|"4. Check User Token (userIamPrincipal)"| AuthManager
+        
+        SMClient["Secret Manager: jira_oauth_client"]
+        SMSecret["Secret Manager: jira_oauth_secret"]
+        AuthManager -->|"5. Fetch App Secrets"| SMClient
+        AuthManager -->|"5. Fetch App Secrets"| SMSecret
+    end
+
+    subgraph AtlassianCloud["Atlassian Jira Cloud"]
+        AuthEndpoint["Atlassian 3LO Authorize Endpoint\n(auth.atlassian.com)"]
+        JiraAPI["Atlassian Jira REST API\n(api.atlassian.com/ex/jira/...)"]
+        
+        User -.->|"6a. Consent & Authorize"| AuthEndpoint
+        AuthEndpoint -.->|"6b. Callback with Code"| AuthManager
+        AuthManager -->|"7. Proxy Request with User Token"| JiraAPI
+    end
+
+    JiraAPI -->|"8. Filtered Issues (User A ACLs)"| Tools
+    Tools -->|"9. Grounded Context"| Agent
+    Agent -->|"10. Synthesized Answer with Citations"| UI
 ```
 
-### Repository Structure
-- `pyproject.toml` — `uv` project configuration and dependencies (`google-adk`, `google-auth`, `google-genai`, `requests`, `python-dotenv`, `pytest`).
-- `.gitignore` / `.env.example` — Non-secret configuration template.
-- `jira_federated_agent/`
-  - `__init__.py` — Exposes `agent` module for `adk web`.
-  - `config.py` — Typed configuration loader and input validators.
-  - `auth.py` — End-user OAuth2 credential resolver (supports ADK `AuthConfig` / `tool_context.request_credential` in `adk web`, environment OAuth tokens, and local Google OAuth user credentials, plus Vertex AI ADC bridging).
-  - `jira_connector_client.py` — Client for Discovery Engine `DataConnectorService` (`:checkRefreshToken`, `:acquireAccessToken`, `:acquireAndStoreRefreshToken`, `widgetConfigs/default_search_widget_config`, and `:invokeConnectorMcp` for `search_issues`, `get_issue`, `list_projects`, and `search_projects`).
-  - `agent.py` — Defines the ADK `root_agent` (`LlmAgent`) and tool functions with OAuth verification and grounded Jira citations.
-- `tests/`
-  - `test_config_and_auth.py` — Unit tests for input validation, JQL sanitization, OAuth credential resolution, and ADK `AuthConfig` generation.
-  - `test_jira_connector_client.py` — Unit tests for Discovery Engine federated connector calls (`check_oauth_status`, `search_issues`, `get_issue`, `list_projects`, `complete_oauth_consent`).
-  - `test_integration_live.py` — Live integration test against the configured connector verifying real Jira issues are retrieved when credentials are available.
+---
 
-## Verification Plan
+### Sequence Flow: End-User 3LO Delegation
 
-### Unit & Live Integration Testing (TDD)
-1. Write unit tests in `tests/` first covering JQL builder/validation, OAuth token resolution, and Discovery Engine `:invokeConnectorMcp` response parsing.
-2. Implement `jira_federated_agent` modules and run `uv run pytest` until 100% of unit and live integration tests pass.
-3. Launch `uv run adk web --host 127.0.0.1 --port 8000` and verify via the `adk web` API/UI that the user can authenticate and retrieve live Jira issues.
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as End User (Browser)
+    participant Chat as Gemini Enterprise Chat
+    participant Agent as Jira Federated Agent
+    participant AuthMgr as IAM Auth Manager / DE Vault
+    participant SM as Google Cloud Secret Manager
+    participant Atlassian as Atlassian Cloud (Jira)
 
-### Automated Security Check
-- **Security Scanner**: Run a scan on all newly created files to identify common vulnerabilities (e.g., XSS, SQL/JQL injection, hardcoded secrets). If findings are detected, auto-apply the fix and document the results.
-- **Security Audit**: Audit the new code for design-level security issues:
-  - Input validation & JQL escaping on all user-supplied search queries, project keys, and issue keys.
-  - No hardcoded secrets, OAuth client secrets, or tokens in source code or logs.
-  - `adk web` server strictly bound to `127.0.0.1` (never `0.0.0.0`).
-  - All outbound API communication over HTTPS (`https://discoveryengine.googleapis.com` and `https://oauth2.googleapis.com`).
+    User->>Chat: "What Jira tickets are currently open?"
+    Chat->>Agent: StreamAssist (agent: 16003540595574963813)
+    Agent->>AuthMgr: Check user authorization (userIamPrincipal)
+    
+    alt User Has Not Consented Yet (First Time)
+        AuthMgr-->>Agent: OAuth required (acquireUserAuthorization)
+        Agent-->>Chat: Return authorization URI
+        Chat-->>User: Display "Sign in with Jira" authorization button
+        User->>Atlassian: Navigate to Atlassian 3LO Consent URL
+        User->>Atlassian: Grant read access (offline_access, read:jira-user, read:jira-work)
+        Atlassian-->>User: Redirect to callback URL with auth code
+        User->>AuthMgr: Callback (vertexaisearch.cloud.google.com/static/oauth/oauth.html?code=...)
+        AuthMgr->>SM: Read client_id & client_secret (jira_oauth_client / jira_oauth_secret)
+        SM-->>AuthMgr: Return Atlassian OAuth app credentials
+        AuthMgr->>Atlassian: Exchange code for refresh & access tokens (auth.atlassian.com/oauth/token)
+        Atlassian-->>AuthMgr: Return access_token & refresh_token
+        AuthMgr->>AuthMgr: Encrypt & store tokens keyed by userIamPrincipal in 3LO Vault
+    end
+
+    Agent->>AuthMgr: Execute query with user identity
+    AuthMgr->>Atlassian: Forward request with User A's Bearer token (:invokeConnectorMcp / REST)
+    Atlassian-->>AuthMgr: Return Jira issues matching User A's permissions
+    AuthMgr-->>Agent: Raw normalized issue payload
+    Agent-->>Chat: Grounded response with issue keys, summaries, and citations
+    Chat-->>User: "Here are the open tickets you have access to..."
+```
+
+---
+
+## 3. Environment & Execution
+
+Activate the local virtual environment:
+```bash
+source /usr/local/google/home/jwortz/gemini-jira-federated/.venv/bin/activate
+```
+Or execute commands with `uv run`:
+```bash
+uv run python scripts/setup_jira_auth_provider.py
+uv run pytest -v
+```
+
+## 4. Verification & Testing
+- Unit tests: `tests/test_config_and_auth.py`, `tests/test_jira_connector_client.py`, `tests/test_setup_jira_auth_provider.py`.
+- Live integration tests: `tests/test_integration_live.py`.
+- Atlassian 3LO parameter validation: RFC 6749 compliance (`response_type=code`, `redirect_uri`, `prompt=consent`).

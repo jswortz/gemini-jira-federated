@@ -72,11 +72,17 @@ def test_grant_secret_accessor_role():
 
 
 @patch("requests.get")
-def test_get_or_create_discovery_engine_authorization_existing(mock_get):
+def test_get_or_create_discovery_engine_authorization_existing_matching(mock_get):
+    from scripts.setup_jira_auth_provider import ATLASSIAN_AUTH_URI
     mock_resp = MagicMock()
     mock_resp.ok = True
     mock_resp.json.return_value = {
-        "name": "projects/123/locations/global/authorizations/jira-oauth-provider"
+        "name": "projects/123/locations/global/authorizations/jira-oauth-provider",
+        "serverSideOauth2": {
+            "clientId": "cid",
+            "authorizationUri": ATLASSIAN_AUTH_URI,
+            "scopes": ["read:jira-work"],
+        },
     }
     mock_get.return_value = mock_resp
 
@@ -90,6 +96,45 @@ def test_get_or_create_discovery_engine_authorization_existing(mock_get):
         scopes=["read:jira-work"],
     )
     assert res["name"] == "projects/123/locations/global/authorizations/jira-oauth-provider"
+
+
+@patch("requests.patch")
+@patch("requests.get")
+def test_get_or_create_discovery_engine_authorization_existing_needs_update(mock_get, mock_patch):
+    mock_get_resp = MagicMock()
+    mock_get_resp.ok = True
+    mock_get_resp.json.return_value = {
+        "name": "projects/123/locations/global/authorizations/jira-oauth-provider",
+        "serverSideOauth2": {
+            "clientId": "old-cid",
+            "authorizationUri": "https://auth.atlassian.com/old",
+            "scopes": ["offline_access"],
+        },
+    }
+    mock_get.return_value = mock_get_resp
+
+    mock_patch_resp = MagicMock()
+    mock_patch_resp.ok = True
+    mock_patch_resp.json.return_value = {
+        "name": "projects/123/locations/global/authorizations/jira-oauth-provider",
+        "serverSideOauth2": {
+            "clientId": "cid",
+            "scopes": ["read:jira-work"],
+        },
+    }
+    mock_patch.return_value = mock_patch_resp
+
+    res = get_or_create_discovery_engine_authorization(
+        access_token="fake-token",
+        project_number="123",
+        location="global",
+        authorization_id="jira-oauth-provider",
+        client_id="cid",
+        client_secret="sec",
+        scopes=["read:jira-work"],
+    )
+    assert res["serverSideOauth2"]["clientId"] == "cid"
+    mock_patch.assert_called_once()
 
 
 @patch("requests.post")

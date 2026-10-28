@@ -47,13 +47,16 @@ DEFAULT_CLIENT_ID_SECRET = "jira_oauth_client"
 DEFAULT_CLIENT_SECRET_SECRET = "jira_oauth_secret"
 DEFAULT_AUTH_PROVIDER_ID = "jira-oauth-provider"
 ATLASSIAN_REDIRECT_URI = "https://vertexaisearch.cloud.google.com/static/oauth/oauth.html"
-ATLASSIAN_AUTH_URI = "https://auth.atlassian.com/authorize?audience=api.atlassian.com&prompt=consent"
+ATLASSIAN_AUTH_URI = (
+    "https://auth.atlassian.com/authorize?audience=api.atlassian.com"
+    f"&redirect_uri={requests.utils.quote(ATLASSIAN_REDIRECT_URI, safe='')}"
+    "&response_type=code&prompt=consent"
+)
 ATLASSIAN_TOKEN_URI = "https://auth.atlassian.com/oauth/token"
 DEFAULT_SCOPES = [
     "offline_access",
     "read:jira-user",
     "read:jira-work",
-    "read:issue:jira",
 ]
 
 
@@ -297,12 +300,6 @@ def get_or_create_discovery_engine_authorization(
     # 1. Check if authorization already exists
     logger.info("Checking if Discovery Engine Authorization %s exists...", auth_name)
     get_resp = requests.get(get_url, headers=headers, timeout=30)
-    if get_resp.ok:
-        logger.info("Discovery Engine Authorization %s already exists.", auth_name)
-        return get_resp.json()
-
-    # 2. Create the authorization resource
-    create_url = f"{base_url}/projects/{project_number}/locations/{location}/authorizations?authorizationId={authorization_id}"
     payload = {
         "displayName": "Jira 3LO Auth Provider",
         "serverSideOauth2": {
@@ -314,6 +311,34 @@ def get_or_create_discovery_engine_authorization(
             "pkceVerificationEnabled": False,
         },
     }
+
+    if get_resp.ok:
+        logger.info("Discovery Engine Authorization %s already exists. Checking if update required...", auth_name)
+        existing_data = get_resp.json()
+        existing_oauth = existing_data.get("serverSideOauth2", {})
+        if (
+            existing_oauth.get("authorizationUri") != ATLASSIAN_AUTH_URI
+            or existing_oauth.get("scopes") != scopes
+            or existing_oauth.get("clientId") != client_id
+        ):
+            if dry_run:
+                logger.info("[DRY-RUN] Would update Authorization via PATCH %s?updateMask=serverSideOauth2", get_url)
+                return {"name": auth_name, "serverSideOauth2": payload["serverSideOauth2"]}
+            logger.info("Updating existing Discovery Engine Authorization %s...", auth_name)
+            patch_url = f"{get_url}?updateMask=serverSideOauth2"
+            patch_resp = requests.patch(patch_url, headers=headers, json=payload, timeout=30)
+            if not patch_resp.ok:
+                raise RuntimeError(
+                    f"Failed to update Discovery Engine Authorization: HTTP {patch_resp.status_code} - {patch_resp.text}"
+                )
+            logger.info("Successfully updated Discovery Engine Authorization %s.", auth_name)
+            return patch_resp.json()
+
+        logger.info("Discovery Engine Authorization %s is up to date.", auth_name)
+        return existing_data
+
+    # 2. Create the authorization resource
+    create_url = f"{base_url}/projects/{project_number}/locations/{location}/authorizations?authorizationId={authorization_id}"
 
     if dry_run:
         logger.info("[DRY-RUN] Would create Authorization via POST %s with payload:", create_url)

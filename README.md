@@ -1,14 +1,165 @@
 # Gemini Enterprise Jira Federated Connector — ADK RAG Agent (`gemini-jira-federated`)
 
-This repository demonstrates how to build a grounded **Google Agent Development Kit (ADK)** agent over a **Gemini Enterprise (Discovery Engine) Federated Jira Data Connector** (`connectorType: "THIRD_PARTY_FEDERATED"`) using **end-user OAuth2 authentication**.
+This repository demonstrates how to build a grounded **Google Agent Development Kit (ADK)** agent over a **Gemini Enterprise (Discovery Engine) Federated Jira Data Connector** (`connectorType: "THIRD_PARTY_FEDERATED"`) using **end-user OAuth2 authentication (3-Legged OAuth / 3LO)** backed by **Google Cloud IAM Auth Manager** and **Google Cloud Secret Manager**.
 
 ![ADK Web UI with Jira Federated Agent](assets/adk_web_jira_agent.png)
+
+---
+
+## Architecture & End-User 3LO Auth Manager Integration
+
+When generative AI agents interact with third-party SaaS systems like Jira, they must authenticate outbound requests securely. Rather than using static service account API tokens (which would expose all corporate Jira tickets to all users), this architecture implements **delegated user identity (3-Legged OAuth / 3LO)** via the **Google Cloud IAM Auth Manager** and Discovery Engine Authorization Services.
+
+> [!NOTE]
+> For official Google Cloud architectural principles on agent credential brokering, see the [Google Cloud IAM Auth Manager Overview](https://docs.cloud.google.com/iam/docs/auth-manager-overview) and [Authenticate using 3-legged OAuth with auth manager](https://cloud.google.com/iam/docs/agent-identity-auth-manager-oauth3).
+
+### Component Architecture
+
+```mermaid
+flowchart TD
+    subgraph Client["Client Interface"]
+        User["End User (admin@jwortz.altostrat.com)"]
+        ChatUI["Gemini Enterprise Chat UI / ADK Web Dev UI"]
+        User -->|"1. Natural Language Query\n('What tickets are open?')"| ChatUI
+    end
+
+    subgraph AgentPlatform["Gemini Enterprise Agent Platform & Vertex AI"]
+        Agent["Jira Federated Agent\n(ADK LlmAgent / Reasoning Engine)\nAgent ID: 16003540595574963813"]
+        ChatUI -->|"2. StreamAssist / Query"| Agent
+        AgentTool["Jira Search & MCP Tools\n(search_jira_issues / get_jira_issue)"]
+        Agent -->|"3. Invoke Tool"| AgentTool
+    end
+
+    subgraph GoogleIAM["Google Cloud IAM & Discovery Engine Auth Manager"]
+        AuthManager["Discovery Engine Auth Service & 3LO Vault\n(Auth Provider: jira-oauth-provider)"]
+        AgentTool -->|"4. Check / Request User Credential\n(userIamPrincipal: User A)"| AuthManager
+        
+        SMClient["Secret Manager: jira_oauth_client"]
+        SMSecret["Secret Manager: jira_oauth_secret"]
+        AuthManager -->|"5. Fetch OAuth App Credentials"| SMClient
+        AuthManager -->|"5. Fetch OAuth App Credentials"| SMSecret
+    end
+
+    subgraph AtlassianCloud["Atlassian Jira Cloud"]
+        AtlassianAuth["Atlassian OAuth 2.0 (3LO) Endpoint\n(auth.atlassian.com)"]
+        AtlassianAPI["Atlassian Jira REST API\n(api.atlassian.com/ex/jira/...)"]
+        
+        User -.->|"6a. Consent & Authorize (3LO)"| AtlassianAuth
+        AtlassianAuth -.->|"6b. Redirect with Code\n(vertexaisearch.cloud.google.com/...)"| AuthManager
+        AuthManager -->|"7. Live 3LO Proxy with User Token"| AtlassianAPI
+    end
+
+    AtlassianAPI -->|"8. Filtered Jira Issues (User A ACLs)"| AgentTool
+    AgentTool -->|"9. Grounded Context"| Agent
+    Agent -->|"10. Synthesized Answer with Citations"| ChatUI
+```
+
+---
+
+### End-to-End 3-Legged OAuth Sequence Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as End User (Browser)
+    participant Chat as Gemini Enterprise / ADK Web
+    participant Agent as Jira Federated Agent
+    participant AuthMgr as IAM Auth Manager / DE Vault
+    participant SM as Google Cloud Secret Manager
+    participant Atlassian as Atlassian Cloud (Jira)
+
+    User->>Chat: "What Jira issues are open in project CCS?"
+    Chat->>Agent: StreamAssist / Execute agent run
+    Agent->>AuthMgr: Check user authorization (userIamPrincipal)
+    
+    alt User Has Not Consented Yet (First Time)
+        AuthMgr-->>Agent: OAuth required (acquireUserAuthorization)
+        Agent-->>Chat: Return authorization URI
+        Chat-->>User: Display "Sign in with Jira" authorization button
+        User->>Atlassian: Navigate to Atlassian 3LO Consent URL
+        User->>Atlassian: Grant read access (offline_access, read:jira-user, read:jira-work)
+        Atlassian-->>User: Redirect to callback URL with auth code
+        User->>AuthMgr: Callback (vertexaisearch.cloud.google.com/static/oauth/oauth.html?code=...)
+        AuthMgr->>SM: Read client_id & client_secret (jira_oauth_client / jira_oauth_secret)
+        SM-->>AuthMgr: Return Atlassian OAuth app credentials
+        AuthMgr->>Atlassian: Exchange code for refresh & access tokens (auth.atlassian.com/oauth/token)
+        Atlassian-->>AuthMgr: Return access_token & refresh_token
+        AuthMgr->>AuthMgr: Encrypt & store tokens keyed by userIamPrincipal in 3LO Vault
+    end
+
+    Agent->>AuthMgr: Execute query with user identity
+    AuthMgr->>Atlassian: Forward request with User A's Bearer token (:invokeConnectorMcp / REST)
+    Atlassian-->>AuthMgr: Return Jira issues matching User A's permissions
+    AuthMgr-->>Agent: Raw normalized issue payload
+    Agent-->>Chat: Grounded response with issue keys, summaries, and citations
+    Chat-->>User: "Here are the open tickets you have access to..."
+```
+
+---
+
+## How End-User Credentials & Data Isolation Work
+
+### 1. Zero Shared Master Credentials
+In standard API-key architectures, an application shares a single service account token across all queries. If an agent executes a query on behalf of User A, the service account could inadvertently expose issues from confidential projects that User A has no permission to view in Jira.
+
+### 2. IAM Principal Keying (`userIamPrincipal`)
+Google Cloud's Auth Manager binds each Atlassian OAuth refresh token directly to the calling Google Cloud IAM Principal (e.g. `userIamPrincipal: admin@jwortz.altostrat.com`).
+- **User A** only retrieves tickets visible to User A in Atlassian Jira.
+- **User B** only retrieves tickets visible to User B in Atlassian Jira.
+- Atlassian's native Issue Security Schemes, Project Permissions, and Role-Based Access Controls (RBAC) are fully preserved.
+
+### 3. Secret Manager Security (Pattern 2)
+The OAuth App Client ID and Client Secret are stored in Google Cloud Secret Manager:
+- `projects/679926387543/secrets/jira_oauth_client`
+- `projects/679926387543/secrets/jira_oauth_secret`
+
+Access is restricted via IAM to the Discovery Engine service agent (`service-679926387543@gcp-sa-discoveryengine.iam.gserviceaccount.com`) and Compute Engine SA (`roles/secretmanager.secretAccessor`). No secrets are ever stored in plain text or Git.
+
+---
+
+## Troubleshooting & The Atlassian 3LO Error Fix
+
+### The Problem
+When clicking the Jira sign-in link, users previously encountered:
+```text
+Hmm... We're having trouble logging you in.
+The authorize request was incomplete or invalid. Start again from the app to initiate sign-in and ensure the link includes all required details. Contact the app developer for further help.
+error: invalid_request
+error_description: Incorrect request parameters
+00177fd7-175a-11fb-46de-94e89f6fd34b
+```
+
+### The Root Cause
+1. **Missing `response_type=code`**: RFC 6749 and Atlassian 3LO strictly require `response_type=code`. Discovery Engine's internal authorization URL builder does **not** automatically inject `response_type`; it expects it within the `authorizationUri` template.
+2. **Missing `redirect_uri`**: Atlassian requires `redirect_uri=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fstatic%2Foauth%2Foauth.html` matching the callback URL configured in the Atlassian Developer Console.
+3. **Scope Family Mismatch**: Atlassian separates scopes into **Classic** (`offline_access`, `read:jira-user`, `read:jira-work`) and **Granular** (`read:issue:jira`). Requesting a granular scope on an app configured with classic scopes causes Atlassian to reject the authorize request as `invalid_request`.
+
+### The Fix
+In `scripts/setup_jira_auth_provider.py`, the `authorizationUri` is configured as:
+```text
+https://auth.atlassian.com/authorize?audience=api.atlassian.com&redirect_uri=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fstatic%2Foauth%2Foauth.html&response_type=code&prompt=consent
+```
+With classic scopes:
+```python
+DEFAULT_SCOPES = [
+    "offline_access",
+    "read:jira-user",
+    "read:jira-work",
+]
+```
+
+When Discovery Engine executes `acquireUserAuthorization`, it produces the complete, RFC-compliant 3LO URL:
+```text
+https://auth.atlassian.com/authorize?audience=api.atlassian.com&redirect_uri=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fstatic%2Foauth%2Foauth.html&response_type=code&prompt=consent&client_id=RyA0UoXKSMmuQqEDMSLnOZQCzM0Eadic&scope=offline_access+read:jira-user+read:jira-work&state=...
+```
+
+---
 
 ## Target Data Source (Configured via `.env`)
 Configure your target Discovery Engine app and Jira connector in `.env` (see [`.env.example`](.env.example)):
 - **GCP Project**: `DISCOVERY_ENGINE_PROJECT_ID` (`DISCOVERY_ENGINE_PROJECT_NUMBER`)
-- **Discovery Engine App / Engine**: `DISCOVERY_ENGINE_ID` (`global`)
-- **Data Connector Collection**: `JIRA_CONNECTOR_COLLECTION_ID` (e.g. `jira-federated_...`)
+- **Discovery Engine App / Engine**: `DISCOVERY_ENGINE_ID` (`grocery-workshop-engine`, `global`)
+- **Data Connector Collection**: `JIRA_CONNECTOR_COLLECTION_ID` (e.g. `jira-federated_...` or `jira_1759440079662`)
 - **Entity Data Stores (10)**:
   - `_issue`, `_bug`, `_epic`, `_story`, `_task`, `_comment`, `_attachment`, `_project`, `_worklog`, `_board`
 - **Atlassian Jira Cloud Instance**: `JIRA_INSTANCE_URI` (e.g. `https://<tenant>.atlassian.net`)
@@ -32,80 +183,63 @@ JIRA_RETRIEVAL_MODE=mcp
 
 ---
 
-## Critical Production Gotchas & Best Practices
+## Setup & Deployment Guide
 
-### 1. Granular OAuth Scopes (The #1 Silent Failure Trap)
-Atlassian splits OAuth 2.0 scopes into **classic** (`read:jira-work`) and **granular** scope families. 
-> [!WARNING]
-> If your Atlassian App only has classic scopes configured, Discovery Engine will report `200 OK` on discovery, but federated queries will **silently return 0 results** with no error ("I found no matching issues").
+### 1. Activate the Python Virtual Environment
+You can activate the local environment directly:
+```bash
+source /usr/local/google/home/jwortz/gemini-jira-federated/.venv/bin/activate
+```
+Or run any tool with `uv run`:
+```bash
+cd /usr/local/google/home/jwortz/gemini-jira-federated
+uv run pytest -v
+```
 
-Ensure your Atlassian developer app (`developer.atlassian.com/console/myapps`) has all required granular scopes enabled:
+### 2. Configure Atlassian Developer Console
+In your Atlassian App ([developer.atlassian.com/console/myapps](https://developer.atlassian.com/console/myapps)):
+1. Navigate to **Authorization** -> **OAuth 2.0 (3LO)** -> **Configure**.
+2. Add the Google Cloud Callback URL:
+   ```text
+   https://vertexaisearch.cloud.google.com/static/oauth/oauth.html
+   ```
+3. Under **Permissions (Scopes)**, add:
+   - `offline_access`
+   - `read:jira-user`
+   - `read:jira-work`
 
-| Scope | Required For |
-| :--- | :--- |
-| `read:issue:jira` | Read Issue, IssueType, Resolution |
-| `read:user:jira` | Resolve assignee & reporter account IDs to display names |
-| `read:comment:jira` | Read issue comments |
-| `read:project:jira` | Project list and per-project metadata |
-| `read:board-scope:jira-software` | Boards (Jira Software) |
-| `read:issue-meta:jira` / `read:issue-details:jira` | Field metadata, custom fields, watchers |
-| `read:issue-link:jira` / `read:issue-link-type:jira` | Issue links (blocks, depends-on) |
-| `read:worklog:jira` / `read:attachment:jira` | Worklog history & attachment metadata |
+### 3. Provision Pattern 2 (Secret Manager + Auth Provider)
+Run the automated setup script to store credentials, grant IAM permissions, create the Discovery Engine Authorization, and bind it to the registered Gemini Enterprise agent:
+```bash
+# Sourcing the environment
+source /usr/local/google/home/jwortz/gemini-jira-federated/.venv/bin/activate
 
-> [!IMPORTANT]
-> **Re-consent is required after scope changes**: Atlassian refresh tokens **do not auto-upgrade** when scopes are added in the Atlassian console. You must force re-consent via `complete_jira_oauth_consent()` or the Cloud Console Authentication tab.
+# Execute setup
+python scripts/setup_jira_auth_provider.py \
+  --project-id="wortz-project-352116" \
+  --project-number="679926387543" \
+  --engine-id="grocery-workshop-engine" \
+  --agent-id="16003540595574963813"
+```
 
-### 2. The 10-Entity Splitting Requirement
-Discovery Engine federated search splits Jira tickets across 10 per-entity datastores (`_issue`, `_bug`, `_epic`, `_story`, `_task`, `_comment`, `_attachment`, `_project`, `_worklog`, `_board`). 
-When using `:streamAssist`, all 10 datastores must be attached in `toolsSpec.vertexAiSearchSpec.dataStoreSpecs`. Attaching only `_issue` will cause questions about comments, projects, or boards to silently return zero matches.
+### 4. Run Unit & Live Tests
+```bash
+uv run pytest -v
+```
+
+### 5. Launch `adk web` Locally
+```bash
+uv run adk web --host 127.0.0.1 --port 8000
+```
+Open **`http://127.0.0.1:8000/dev-ui/?app=jira_federated_agent`** in your browser.
 
 ---
 
-## Why Standard `VertexAiSearchTool` Alone Returns `[]` on Federated Connectors
-
-In `THIRD_PARTY_FEDERATED` mode (`incrementalSyncDisabled: true`), **zero documents are indexed in Google Cloud Branch 0**. Furthermore, Unified Federated Connectors (`dataSource: "jira"`, `connectorModes: ["FEDERATED", "ACTIONS"]`) execute live federated queries through Discovery Engine's `DataConnectorService.InvokeConnectorMcp` (`:invokeConnectorMcp`) using the calling user's 3-Legged OAuth (3LO) token stored in Discovery Engine's `userStores` vault.
-
-```mermaid
-flowchart LR
-    User["End User in adk web"] -->|"1. Google OAuth2 Token"| Agent["ADK Agent (jira_federated_agent)"]
-    Agent -->|"2. Check / Refresh 3LO Vault\n(:checkRefreshToken / :acquireAccessToken)"| Vault["Discovery Engine DataConnector Vault"]
-    Agent -->|"3. Federated RAG Query\n(:invokeConnectorMcp -> search_issues / get_issue)"| DE["Discovery Engine InvokeConnectorMcp"]
-    DE -->|"4. Live 3LO Proxy"| Jira["Atlassian Jira Cloud (<tenant>.atlassian.net)"]
-```
-
-### How OAuth Works in This Repo
-1. **Google OAuth Identity Resolution (`jira_federated_agent/auth.py`)**:
-   - Supports **ADK Web interactive OAuth2** (`AuthConfig` / `tool_context.request_credential`) when `ADK_INTERACTIVE_OAUTH=true` and `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET` are set.
-   - Automatically resolves the authenticated user's Google OAuth token (`OAUTH_USER_ACCOUNT`) and bridges `google.auth.default()` in memory so both Vertex AI (`gemini-2.5-flash`) and Discovery Engine authenticate as the user without writing secret files to disk.
-2. **Discovery Engine 3LO Jira Vault & Consent (`jira_federated_agent/jira_connector_client.py`)**:
-   - `check_jira_oauth_status`: Calls `:checkRefreshToken`, `widgetConfigs/default_search_widget_config`, and `:acquireAccessToken` on the target connector collection to verify the user's linked Atlassian 3LO OAuth token and scopes (`read:jira-work`, `read:jira-user`, `offline_access`).
-   - If a user has not yet linked their Atlassian account, `check_jira_oauth_status` returns the exact `authorization_uri` (`https://auth.atlassian.com/authorize?...`), and `complete_jira_oauth_consent(redirect_url)` exchanges the callback code via `:acquireAndStoreRefreshToken`.
-3. **Live Federated Jira Retrieval (`jira_federated_agent/agent.py`)**:
-   - `search_jira_issues`: Executes federated JQL and keyword searches via `:invokeConnectorMcp` (`search_issues`) with input validation and ADF (Atlassian Document Format) text extraction.
-   - `get_jira_issue`: Retrieves full details and comments for a specific issue key (e.g., `GEAP-3`, `GEAP-2`, `CCS-68`, `CCS-50`).
-   - `list_jira_projects`: Lists or searches Jira projects (`CCS` / `Grocery-store`, `GEAP`, etc.).
-
----
-
-## Quickstart
-
-### 1. Install Dependencies & Run Tests
-```bash
-cd ~/gemini-jira-federated
-~/.local/bin/uv sync --extra dev
-
-# Run unit + live integration tests
-~/.local/bin/uv run pytest -v
-```
-
-### 2. Launch `adk web`
-```bash
-cd ~/gemini-jira-federated
-~/.local/bin/uv run adk web --host 127.0.0.1 --port 8000
-```
-
-Open **`http://127.0.0.1:8000/dev-ui/?app=jira_federated_agent`** in your browser and try prompts such as:
-- *"Check my Jira OAuth status and list all Jira projects."*
-- *"What Jira issues can you see in the federated connector?"*
-- *"Search for Jira issues related to Snowflake migration or VPC-SC."*
-- *"Show me the full details and comments on issue GEAP-3."*
+## References & Documentation
+- [Google Cloud IAM Auth Manager Overview](https://docs.cloud.google.com/iam/docs/auth-manager-overview)
+- [Agent Identity Auth Manager Overview](https://cloud.google.com/iam/docs/agent-identity-auth-manager-overview)
+- [Authenticate using 3-legged OAuth with Auth Manager](https://cloud.google.com/iam/docs/agent-identity-auth-manager-oauth3)
+- [Manage Agent Identity Auth Providers](https://cloud.google.com/iam/docs/agent-identity-manage-auth-providers)
+- [Google Cloud Agent Identity Overview](https://cloud.google.com/iam/docs/agent-identity-overview)
+- [Atlassian OAuth 2.0 (3LO) Apps Documentation](https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/)
+- [RFC 6749: The OAuth 2.0 Authorization Framework](https://datatracker.ietf.org/doc/html/rfc6749)
