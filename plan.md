@@ -18,87 +18,127 @@ For detailed Google Cloud conceptual standards on agent authentication brokering
 
 ```mermaid
 flowchart TD
-    subgraph Client["Client Tier"]
+    subgraph Client["Client Interface"]
         User["End User (admin@jwortz.altostrat.com)"]
-        UI["Gemini Enterprise Chat UI / ADK Web Dev UI"]
-        User -->|"1. User Query"| UI
+        ChatUI["Gemini Enterprise Chat UI / ADK Web Dev UI"]
+        User -->|"1. User Query ('What issues are open?')"| ChatUI
     end
 
-    subgraph AgentPlatform["Gemini Enterprise Agent Platform & Vertex AI"]
-        Agent["Jira Federated Agent\n(ADK LlmAgent / Reasoning Engine 1626276928405110784)"]
-        UI -->|"2. StreamAssist"| Agent
-        Tools["Jira Search & MCP Tools"]
-        Agent -->|"3. Call Tool"| Tools
+    subgraph AgentPlatform["Vertex AI Agent Engine & ADK Runtime"]
+        Agent["Jira Federated Agent\n(ADK LlmAgent / Reasoning Engine)\nAgent ID: 16003540595574963813"]
+        ChatUI -->|"2. StreamAssist / Query"| Agent
+        AgentClient["JiraFederatedConnectorClient\n(Google Bearer Token)"]
+        Agent -->|"3. Execute Tool"| AgentClient
     end
 
-    subgraph GoogleIAM["Google Cloud IAM Auth Manager & Discovery Engine"]
-        AuthManager["Discovery Engine 3LO Auth Service\n(projects/.../authorizations/jira-oauth-provider)"]
-        Tools -->|"4. Check User Token (userIamPrincipal)"| AuthManager
+    subgraph GoogleIAM["Google Cloud IAM & Discovery Engine Auth Manager"]
+        DE["Discovery Engine Gateway\n(jira-federated_1782320633397)"]
+        AgentClient -->|"4. POST :invokeConnectorMcp\n(Google Bearer Token + tool name + args)"| DE
+        
+        AuthVault["Auth Manager 3LO Token Vault\n(userIamPrincipal: admin@jwortz.altostrat.com)"]
+        DE -->|"5. Resolve Caller & Query 3LO Vault"| AuthVault
+        
+        AuthProvider["Authorization Provider\n(jira-oauth-provider)"]
+        AuthVault -.->|"Configured via"| AuthProvider
         
         SMClient["Secret Manager: jira_oauth_client"]
         SMSecret["Secret Manager: jira_oauth_secret"]
-        AuthManager -->|"5. Fetch App Secrets"| SMClient
-        AuthManager -->|"5. Fetch App Secrets"| SMSecret
+        AuthProvider -->|"Read App ID"| SMClient
+        AuthProvider -->|"Read App Secret"| SMSecret
     end
 
     subgraph AtlassianCloud["Atlassian Jira Cloud"]
-        AuthEndpoint["Atlassian 3LO Authorize Endpoint\n(auth.atlassian.com)"]
-        JiraAPI["Atlassian Jira REST API\n(api.atlassian.com/ex/jira/...)"]
+        AtlassianAuth["Atlassian OAuth 2.0 (3LO) Endpoint\n(auth.atlassian.com)"]
+        AtlassianJira["Atlassian Jira REST & MCP Services\n(https://api.atlassian.com/ex/jira/...)"]
         
-        User -.->|"6a. Consent & Authorize"| AuthEndpoint
-        AuthEndpoint -.->|"6b. Callback with Code"| AuthManager
-        AuthManager -->|"7. Proxy Request with User Token"| JiraAPI
+        User -.->|"One-time 3LO Consent"| AtlassianAuth
+        AtlassianAuth -.->|"Exchange Code for Refresh Token"| DE
+        DE -->|"6. Proxy Outbound Action with User's 3LO Token"| AtlassianJira
+        AtlassianJira -->|"7. Return Filtered Data (User ACLs)"| DE
     end
 
-    JiraAPI -->|"8. Filtered Issues (User A ACLs)"| Tools
-    Tools -->|"9. Grounded Context"| Agent
-    Agent -->|"10. Synthesized Answer with Citations"| UI
+    DE -->|"8. Normalized MCP Content Envelope"| AgentClient
+    AgentClient -->|"9. Structured Python Dict/List"| Agent
+    Agent -->|"10. Synthesized Answer with Citations"| ChatUI
+    ChatUI -->|"11. Grounded Markdown Table"| User
 ```
 
 ---
 
-### Sequence Flow: End-User 3LO Delegation
+### Sequence Flow: Direct Federated MCP Invocation (`invokeConnectorMcp`)
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User as End User (Browser)
-    participant Chat as Gemini Enterprise Chat
-    participant Agent as Jira Federated Agent
-    participant AuthMgr as IAM Auth Manager / DE Vault
-    participant SM as Google Cloud Secret Manager
-    participant Atlassian as Atlassian Cloud (Jira)
+    participant Chat as Gemini Enterprise / ADK Web
+    participant Agent as ADK LlmAgent
+    participant Client as JiraFederatedConnectorClient
+    participant DE as Discovery Engine (:invokeConnectorMcp)
+    participant Vault as IAM Auth Manager Vault
+    participant Jira as Atlassian Jira Cloud
 
-    User->>Chat: "What Jira tickets are currently open?"
-    Chat->>Agent: StreamAssist (agent: 16003540595574963813)
-    Agent->>AuthMgr: Check user authorization (userIamPrincipal)
+    User->>Chat: "Search for open tickets in project GEAP"
+    Chat->>Agent: Execute agent turn
+    Agent->>Client: search_jira_issues(project_key='GEAP')
+    Client->>DE: POST :invokeConnectorMcp<br/>{"method": "tools/call", "params": {"name": "search_issues", "arguments": {"query": "project = 'GEAP'..."}}}<br/>Header: Authorization: Bearer <Google_Access_Token>
     
-    alt User Has Not Consented Yet (First Time)
-        AuthMgr-->>Agent: OAuth required (acquireUserAuthorization)
-        Agent-->>Chat: Return authorization URI
-        Chat-->>User: Display "Sign in with Jira" authorization button
-        User->>Atlassian: Navigate to Atlassian 3LO Consent URL
-        User->>Atlassian: Grant read access (offline_access, read:jira-user, read:jira-work)
-        Atlassian-->>User: Redirect to callback URL with auth code
-        User->>AuthMgr: Callback (vertexaisearch.cloud.google.com/static/oauth/oauth.html?code=...)
-        AuthMgr->>SM: Read client_id & client_secret (jira_oauth_client / jira_oauth_secret)
-        SM-->>AuthMgr: Return Atlassian OAuth app credentials
-        AuthMgr->>Atlassian: Exchange code for refresh & access tokens (auth.atlassian.com/oauth/token)
-        Atlassian-->>AuthMgr: Return access_token & refresh_token
-        AuthMgr->>AuthMgr: Encrypt & store tokens keyed by userIamPrincipal in 3LO Vault
+    DE->>Vault: Resolve caller identity (userIamPrincipal) & fetch Jira 3LO token
+    alt 3LO Token Valid & Present in Vault
+        Vault-->>DE: Return active Atlassian 3LO Bearer token
+    else Token Expired or Not Authorized
+        DE-->>Client: Error / auth_required (authorizationUri)
+        Client-->>User: Present 3LO authorization link
     end
 
-    Agent->>AuthMgr: Execute query with user identity
-    AuthMgr->>Atlassian: Forward request with User A's Bearer token (:invokeConnectorMcp / REST)
-    Atlassian-->>AuthMgr: Return Jira issues matching User A's permissions
-    AuthMgr-->>Agent: Raw normalized issue payload
-    Agent-->>Chat: Grounded response with issue keys, summaries, and citations
-    Chat-->>User: "Here are the open tickets you have access to..."
+    DE->>Jira: Forward action with user's Atlassian Bearer token<br/>POST /rest/api/3/search/jql
+    Jira-->>DE: Return issues matching user permissions (JSON)
+    DE-->>Client: {"result": {"isError": false, "content": [{"type": "text", "text": "..."}]}}
+    Client-->>Agent: {"status": "success", "issues": [...]}
+    Agent-->>Chat: Grounded response with issue table and links
+    Chat-->>User: Displays issues with key, title, status, priority, and links
 ```
 
 ---
 
-## 3. Environment & Execution
+## 3. Required Google Cloud APIs & IAM Roles
+
+### Required Google Cloud APIs
+Enable all required APIs with:
+```bash
+gcloud services enable \
+  discoveryengine.googleapis.com \
+  aiplatform.googleapis.com \
+  secretmanager.googleapis.com \
+  iam.googleapis.com \
+  iamcredentials.googleapis.com \
+  serviceusage.googleapis.com \
+  cloudresourcemanager.googleapis.com \
+  --project="wortz-project-352116"
+```
+
+| API Service Name | Service Endpoint | Purpose |
+| :--- | :--- | :--- |
+| **Discovery Engine API** | `discoveryengine.googleapis.com` | Gemini Enterprise apps, federated Jira connector (`jira-federated_1782320633397`), Auth Manager authorizations, and `:invokeConnectorMcp`. |
+| **Vertex AI API** | `aiplatform.googleapis.com` | Vertex AI Gemini models, Reasoning Engines (`1626276928405110784`), and Agent Engine runtime. |
+| **Secret Manager API** | `secretmanager.googleapis.com` | Storage of Atlassian OAuth Client ID and Secret (`jira_oauth_client`, `jira_oauth_secret`). |
+| **IAM API & Credentials API** | `iam.googleapis.com`, `iamcredentials.googleapis.com` | Service account token exchange, caller identity validation, and IAM permissions. |
+| **Service Usage & Resource Manager** | `serviceusage.googleapis.com`, `cloudresourcemanager.googleapis.com` | Quotas, service enablement, and project-level policy control. |
+
+### Required IAM Roles
+
+| Identity | Role | Purpose |
+| :--- | :--- | :--- |
+| **Calling User** (`admin@jwortz.altostrat.com`) | `roles/discoveryengine.admin` | Access Gemini Enterprise search apps and execute data connector actions (`discoveryengine.dataConnectors.executeAction`). |
+| | `roles/aiplatform.user` | Query Vertex AI Reasoning Engine agent. |
+| | `roles/secretmanager.viewer` | Read secret metadata. |
+| **Discovery Engine SA** (`service-679926387543@gcp-sa-discoveryengine.iam.gserviceaccount.com`) | `roles/secretmanager.secretAccessor` | Access `jira_oauth_client` and `jira_oauth_secret` during 3LO exchange. |
+| **Reasoning Engine / Compute SA** (`679926387543-compute@developer.gserviceaccount.com`) | `roles/discoveryengine.admin` | Execute `:invokeConnectorMcp` against the federated collection. |
+| | `roles/secretmanager.secretAccessor` | Read app credentials if executing headless scripts. |
+
+---
+
+## 4. Environment & Execution
 
 Activate the local virtual environment:
 ```bash
@@ -110,7 +150,7 @@ uv run python scripts/setup_jira_auth_provider.py
 uv run pytest -v
 ```
 
-## 4. Option A: Direct Federated MCP Tool (`dataConnector:invokeConnectorMcp`)
+## 5. Option A: Direct Federated MCP Tool (`dataConnector:invokeConnectorMcp`)
 
 ### Architecture: Zero Direct Atlassian Credentials in Agent
 Instead of the agent holding or negotiating Jira credentials directly, the Discovery Engine Federated Connector natively exposes Model Context Protocol (MCP) tool endpoints. The agent executes tools via the unified Google Cloud Discovery Engine RPC:
@@ -148,7 +188,7 @@ The federated connector provides 32 built-in MCP tools, including:
 
 ---
 
-## 5. Verification & Testing
+## 6. Verification & Testing
 - Unit tests: `tests/test_config_and_auth.py`, `tests/test_jira_connector_client.py`, `tests/test_setup_jira_auth_provider.py`.
 - Live integration tests: `tests/test_integration_live.py`.
 - Atlassian 3LO parameter validation: RFC 6749 compliance (`response_type=code`, `redirect_uri`, `prompt=consent`).
