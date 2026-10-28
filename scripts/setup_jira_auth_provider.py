@@ -46,7 +46,7 @@ logger = logging.getLogger("setup_jira_auth_provider")
 DEFAULT_CLIENT_ID_SECRET = "jira_oauth_client"
 DEFAULT_CLIENT_SECRET_SECRET = "jira_oauth_secret"
 DEFAULT_AUTH_PROVIDER_ID = "jira-oauth-provider"
-ATLASSIAN_REDIRECT_URI = "https://vertexaisearch.cloud.google.com/static/oauth/oauth.html"
+ATLASSIAN_REDIRECT_URI = "https://vertexaisearch.cloud.google.com/oauth-redirect"
 ATLASSIAN_AUTH_URI = (
     "https://auth.atlassian.com/authorize?audience=api.atlassian.com"
     f"&redirect_uri={requests.utils.quote(ATLASSIAN_REDIRECT_URI, safe='')}"

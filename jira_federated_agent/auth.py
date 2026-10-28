@@ -67,10 +67,41 @@ def extract_token_from_tool_context(tool_context: ToolContext | Any | None) -> s
     if tool_context is None:
         return None
 
-    # 1. Check explicit state key
+    # 1. Check explicit state key (Gemini Enterprise places forwarded OAuth token under temp:{authorization_id})
     state = getattr(tool_context, "state", None)
-    if isinstance(state, dict) and state.get(STATE_TOKEN_KEY):
-        return str(state[STATE_TOKEN_KEY])
+    if state is None and hasattr(tool_context, "session"):
+        state = getattr(tool_context.session, "state", None)
+
+    if state is not None:
+        getter = getattr(state, "get", None)
+        if callable(getter):
+            for candidate_key in (
+                "temp:jira-oauth-provider",
+                "temp:jira_oauth_provider",
+                "jira-oauth-provider",
+                "jira_oauth_provider",
+                STATE_TOKEN_KEY,
+            ):
+                val = getter(candidate_key)
+                if val and "[REDACTED" not in str(val):
+                    token_str = str(val)
+                    if isinstance(state, dict):
+                        state[STATE_TOKEN_KEY] = token_str
+                    return token_str
+
+            # Also check any key starting with temp:
+            try:
+                keys = list(state.keys()) if hasattr(state, "keys") else []
+                for k in keys:
+                    if str(k).startswith("temp:"):
+                        val = getter(k)
+                        if val and "[REDACTED" not in str(val):
+                            token_str = str(val)
+                            if isinstance(state, dict):
+                                state[STATE_TOKEN_KEY] = token_str
+                            return token_str
+            except Exception:
+                pass
 
     # 2. Check ADK get_credential (Agent Platform / Auth Manager)
     if hasattr(tool_context, "get_credential"):
@@ -255,6 +286,19 @@ def resolve_user_oauth_token(
             return token, f"gcloud_cli:{target_account}"
     except Exception as exc:
         logger.warning("Failed to obtain OAuth token via gcloud CLI: %s", exc)
+
+    # 6. Fallback to Google Application Default Credentials (ADC) for Cloud Run / Agent Engine
+    try:
+        adc_creds, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        auth_req = google.auth.transport.requests.Request()
+        if not adc_creds.valid:
+            adc_creds.refresh(auth_req)
+        if adc_creds.token:
+            return str(adc_creds.token), "adc:service_account"
+    except Exception as exc:
+        logger.debug("Could not resolve ADC credentials: %s", exc)
 
     return None, "unauthenticated"
 

@@ -151,8 +151,8 @@ class ConnectorConfig:
         return (
             "https://auth.atlassian.com/authorize?audience=api.atlassian.com"
             f"{client_id_param}"
-            "&scope=offline_access%20read%3Ajira-user%20read%3Ajira-work%20read%3Aissue%3Ajira"
-            "&redirect_uri=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fstatic%2Foauth%2Foauth.html"
+            "&scope=offline_access%20read%3Ajira-user%20read%3Ajira-work"
+            "&redirect_uri=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Foauth-redirect"
             "&response_type=code&prompt=consent"
         )
 

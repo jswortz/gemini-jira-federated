@@ -107,26 +107,25 @@ class JiraFederatedConnectorClient:
         max_results: int = 20,
     ) -> dict[str, Any]:
         """Queries Atlassian Cloud REST API directly using an Atlassian 3LO token."""
-        url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search"
+        url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search/jql"
+
+        # Atlassian /rest/api/3/search/jql requires a bounded query (cannot be empty or unbounded ORDER BY)
+        clean_jql = (safe_jql or "").strip()
+        if not clean_jql:
+            bound_jql = "created is not null order by created desc"
+        elif clean_jql.upper().startswith("ORDER BY"):
+            bound_jql = f"created is not null {clean_jql}"
+        else:
+            bound_jql = clean_jql
+
         params: dict[str, Any] = {
             "maxResults": max_results,
-            "fields": [
-                "summary",
-                "status",
-                "issuetype",
-                "priority",
-                "project",
-                "assignee",
-                "reporter",
-                "creator",
-                "created",
-                "updated",
-                "comment",
-                "description",
-            ],
+            "jql": bound_jql,
+            "fields": (
+                "summary,status,issuetype,priority,project,assignee,reporter,"
+                "creator,created,updated,comment,description"
+            ),
         }
-        if safe_jql:
-            params["jql"] = safe_jql
 
         resp = self._session.get(
             url,
@@ -138,7 +137,7 @@ class JiraFederatedConnectorClient:
             return {
                 "status": "error",
                 "http_status": resp.status_code,
-                "message": f"Atlassian Jira REST API returned HTTP {resp.status_code}.",
+                "message": f"Atlassian Jira REST API returned HTTP {resp.status_code}: {resp.text}",
             }
         data = resp.json()
         raw_issues = data.get("issues", [])
@@ -190,7 +189,7 @@ class JiraFederatedConnectorClient:
         return {
             "status": "success",
             "source": "atlassian_cloud_rest",
-            "jql_executed": safe_jql or "(all issues ordered by created DESC)",
+            "jql_executed": bound_jql,
             "count": len(normalized),
             "issues": normalized,
         }

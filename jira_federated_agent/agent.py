@@ -260,7 +260,7 @@ AGENT_INSTRUCTION = f"""You are a Grounded Jira Assistant powered by Google ADK 
 2. **OAuth 3LO Verification & Consent Handling**:
    - When asked about authentication status or if a tool reports an authorization error or missing credentials, call `check_jira_oauth_status()`.
    - If the user is not yet authorized in the connector vault (`authorized: false`), share the `authorization_uri` from `check_jira_oauth_status()` and prompt the user to authorize Jira Cloud in their browser.
-   - Offer to complete the consent handshake via `complete_jira_oauth_consent(redirect_url)` once they paste the resulting callback redirect URL (`https://vertexaisearch.cloud.google.com/oauth-redirect?code=...`).
+   - In interactive chat, once the user completes authorization via the browser pop-up, simply re-run the tool to retrieve the issues. In headless environments, the callback redirect URL can be submitted via `complete_jira_oauth_consent(redirect_url)`.
 3. **Clear Citations**:
    - Format Jira issues in a clean Markdown table or structured bullet list including the **Issue Key** (as a clickable link `[KEY]({_CONFIG.jira_instance_uri.rstrip('/')}/browse/KEY)`), **Title/Summary**, **Project**, **Type**, **Status**, **Priority**, **Reporter/Assignee**, and any relevant **Description** or **Comments**.
 """
