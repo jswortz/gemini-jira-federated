@@ -62,6 +62,9 @@ def test_grant_secret_accessor_role():
     grant_secret_accessor_role(
         mock_client, "test-proj", "jira-secret", "serviceAccount:test@sa.com"
     )
+    mock_client.get_iam_policy.assert_called_once_with(
+        request={"resource": "projects/test-proj/secrets/jira-secret"}
+    )
     mock_binding_list.add.assert_called_once_with(
         role="roles/secretmanager.secretAccessor", members=["serviceAccount:test@sa.com"]
     )

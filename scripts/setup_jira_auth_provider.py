@@ -43,8 +43,8 @@ from jira_federated_agent.config import ConnectorConfig
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("setup_jira_auth_provider")
 
-DEFAULT_CLIENT_ID_SECRET = "jira-oauth-client-id"
-DEFAULT_CLIENT_SECRET_SECRET = "jira-oauth-client-secret"
+DEFAULT_CLIENT_ID_SECRET = "jira_oauth_client"
+DEFAULT_CLIENT_SECRET_SECRET = "jira_oauth_secret"
 DEFAULT_AUTH_PROVIDER_ID = "jira-oauth-provider"
 ATLASSIAN_REDIRECT_URI = "https://vertexaisearch.cloud.google.com/static/oauth/oauth.html"
 ATLASSIAN_AUTH_URI = "https://auth.atlassian.com/authorize?audience=api.atlassian.com&prompt=consent"
@@ -219,7 +219,7 @@ def grant_secret_accessor_role(
         return
 
     try:
-        policy = client.get_iam_policy(resource=secret_path)
+        policy = client.get_iam_policy(request={"resource": secret_path})
         role = "roles/secretmanager.secretAccessor"
 
         # Check if already granted
@@ -249,7 +249,7 @@ def grant_secret_accessor_role(
                 except Exception:
                     policy.bindings.append({"role": role, "members": [member]})
 
-        client.set_iam_policy(resource=secret_path, policy=policy)
+        client.set_iam_policy(request={"resource": secret_path, "policy": policy})
         logger.info("IAM: Successfully granted %s on %s to %s.", role, secret_name, member)
     except Exception as exc:
         logger.warning("Could not update IAM policy on %s: %s", secret_name, exc)
