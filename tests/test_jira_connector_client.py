@@ -333,7 +333,7 @@ def test_list_comments_via_mcp():
                         "Id": 10033,
                         "IssueKey": "GEAP-3",
                         "AuthorDisplayName": "Jeremy Wortz",
-                        "AuthorEmail": "admin@jwortz.altostrat.com",
+                        "AuthorEmail": "user@example.com",
                         "Body": "Existing comment on issue",
                         "Created": "2026-08-25 16:24:07.87",
                     }

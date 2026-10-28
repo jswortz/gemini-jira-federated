@@ -3,12 +3,12 @@
   "description": "Grounded Jira Assistant powered by the Gemini Enterprise Jira Federated Data Connector with per-user 3LO access control",
   "identity_type": "AGENT_IDENTITY",
   "env_vars": {
-    "DISCOVERY_ENGINE_PROJECT_ID": "wortz-project-352116",
-    "DISCOVERY_ENGINE_PROJECT_NUMBER": "679926387543",
+    "DISCOVERY_ENGINE_PROJECT_ID": "${PROJECT_ID}",
+    "DISCOVERY_ENGINE_PROJECT_NUMBER": "${PROJECT_NUMBER}",
     "DISCOVERY_ENGINE_LOCATION": "global",
     "DISCOVERY_ENGINE_ID": "grocery-workshop-engine",
-    "JIRA_CONNECTOR_COLLECTION_ID": "jira-federated_1782320633397",
-    "JIRA_INSTANCE_URI": "https://jwortz.atlassian.net",
+    "JIRA_CONNECTOR_COLLECTION_ID": "${JIRA_CONNECTOR_COLLECTION_ID}",
+    "JIRA_INSTANCE_URI": "${JIRA_INSTANCE_URI}",
     "JIRA_RETRIEVAL_MODE": "mcp",
     "GEMINI_MODEL": "gemini-2.5-flash"
   }

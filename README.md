@@ -19,23 +19,23 @@ When generative AI agents interact with third-party SaaS systems like Jira, they
 ```mermaid
 flowchart TD
     subgraph Client["Client Interface"]
-        User["End User (admin@jwortz.altostrat.com)"]
+        User["End User (user@your-domain.com)"]
         ChatUI["Gemini Enterprise Chat UI / ADK Web Dev UI"]
         User -->|"1. User Query ('What issues are open?')"| ChatUI
     end
 
     subgraph AgentPlatform["Vertex AI Agent Engine & ADK Runtime"]
-        Agent["Jira Federated Agent\n(ADK LlmAgent / Reasoning Engine)\nAgent ID: 16003540595574963813"]
+        Agent["Jira Federated Agent\n(ADK LlmAgent / Reasoning Engine)\nAgent ID: ${AGENT_ID}"]
         ChatUI -->|"2. StreamAssist / Query"| Agent
         AgentClient["JiraFederatedConnectorClient\n(Google Bearer Token)"]
         Agent -->|"3. Execute Tool"| AgentClient
     end
 
     subgraph GoogleIAM["Google Cloud IAM & Discovery Engine Auth Manager"]
-        DE["Discovery Engine Gateway\n(jira-federated_1782320633397)"]
+        DE["Discovery Engine Gateway\n(jira-federated_...)"]
         AgentClient -->|"4. POST :invokeConnectorMcp\n(Google Bearer Token + tool name + args)"| DE
         
-        AuthVault["Auth Manager 3LO Token Vault\n(userIamPrincipal: admin@jwortz.altostrat.com)"]
+        AuthVault["Auth Manager 3LO Token Vault\n(userIamPrincipal: user@your-domain.com)"]
         DE -->|"5. Resolve Caller & Query 3LO Vault"| AuthVault
         
         AuthProvider["Authorization Provider\n(jira-oauth-provider)"]
@@ -148,17 +148,17 @@ sequenceDiagram
 In standard API-key architectures, an application shares a single service account token across all queries. If an agent executes a query on behalf of User A, the service account could inadvertently expose issues from confidential projects that User A has no permission to view in Jira.
 
 ### 2. IAM Principal Keying (`userIamPrincipal`)
-Google Cloud's Auth Manager binds each Atlassian OAuth refresh token directly to the calling Google Cloud IAM Principal (e.g. `userIamPrincipal: admin@jwortz.altostrat.com`).
+Google Cloud's Auth Manager binds each Atlassian OAuth refresh token directly to the calling Google Cloud IAM Principal (e.g. `userIamPrincipal: user@your-domain.com`).
 - **User A** only retrieves tickets visible to User A in Atlassian Jira.
 - **User B** only retrieves tickets visible to User B in Atlassian Jira.
 - Atlassian's native Issue Security Schemes, Project Permissions, and Role-Based Access Controls (RBAC) are fully preserved.
 
 ### 3. Secret Manager Security (Pattern 2)
 The OAuth App Client ID and Client Secret are stored in Google Cloud Secret Manager:
-- `projects/679926387543/secrets/jira_oauth_client`
-- `projects/679926387543/secrets/jira_oauth_secret`
+- `projects/${PROJECT_NUMBER}/secrets/${JIRA_OAUTH_CLIENT_SECRET_NAME}`
+- `projects/${PROJECT_NUMBER}/secrets/${JIRA_OAUTH_SECRET_SECRET_NAME}`
 
-Access is restricted via IAM to the Discovery Engine service agent (`service-679926387543@gcp-sa-discoveryengine.iam.gserviceaccount.com`) and Compute Engine SA (`roles/secretmanager.secretAccessor`). No secrets are ever stored in plain text or Git.
+Access is restricted via IAM to the Discovery Engine service agent (`service-${PROJECT_NUMBER}@gcp-sa-discoveryengine.iam.gserviceaccount.com`) and Compute Engine SA (`roles/secretmanager.secretAccessor`). No secrets are ever stored in plain text or Git.
 
 ---
 
@@ -264,9 +264,9 @@ Content-Type: application/json
 ## How We Used Google Cloud IAM Auth Manager & Direct Federated MCP
 
 ### 1. Pattern 2 Authorization Setup
-We configured Discovery Engine's Authorization Provider (`projects/679926387543/locations/global/authorizations/jira-oauth-provider`) to reference OAuth App credentials stored securely in Google Cloud Secret Manager:
-- **Client ID Secret**: `projects/679926387543/secrets/jira_oauth_client`
-- **Client Secret**: `projects/679926387543/secrets/jira_oauth_secret`
+We configured Discovery Engine's Authorization Provider (`projects/${PROJECT_NUMBER}/locations/${LOCATION}/authorizations/${AUTH_PROVIDER_ID}`) to reference OAuth App credentials stored securely in Google Cloud Secret Manager:
+- **Client ID Secret**: `projects/${PROJECT_NUMBER}/secrets/${JIRA_OAUTH_CLIENT_SECRET_NAME}`
+- **Client Secret**: `projects/${PROJECT_NUMBER}/secrets/${JIRA_OAUTH_SECRET_SECRET_NAME}`
 - **Atlassian 3LO Authorization URI**:
   ```text
   https://auth.atlassian.com/authorize?audience=api.atlassian.com&redirect_uri=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Foauth-redirect&response_type=code&prompt=consent
@@ -294,10 +294,10 @@ When an agent tool executes:
                "maxResults": 20,
            },
        },
-       "engine": "projects/679926387543/locations/global/collections/default_collection/engines/grocery-workshop-engine",
+       "engine": f"projects/{project_number}/locations/{location}/collections/default_collection/engines/{engine_id}",
    }
    ```
-2. The agent issues a `POST` request to `https://discoveryengine.googleapis.com/v1alpha/projects/679926387543/locations/global/collections/jira-federated_1782320633397/dataConnector:invokeConnectorMcp` authenticated with the caller's Google access token (`Authorization: Bearer ya29...`).
+2. The agent issues a `POST` request to `https://discoveryengine.googleapis.com/v1alpha/projects/{project_number}/locations/{location}/collections/{collection_id}/dataConnector:invokeConnectorMcp` authenticated with the caller's Google access token (`Authorization: Bearer ya29...`).
 3. Discovery Engine verifies caller permissions (`discoveryengine.dataConnectors.executeAction`), resolves the caller's identity, retrieves that specific user's Atlassian 3LO access token from the Auth Manager vault, forwards the request to Jira Cloud, and returns the response in standard MCP format:
    ```json
    {
@@ -341,7 +341,7 @@ gcloud services enable \
   iamcredentials.googleapis.com \
   serviceusage.googleapis.com \
   cloudresourcemanager.googleapis.com \
-  --project="wortz-project-352116"
+  --project="${PROJECT_ID}"
 ```
 
 ### 2. External Third-Party APIs
@@ -352,11 +352,11 @@ gcloud services enable \
 
 | Identity | Required IAM Role | Purpose |
 | :--- | :--- | :--- |
-| **Calling User** (`admin@jwortz.altostrat.com`) | `roles/discoveryengine.admin` | Access Gemini Enterprise search apps and execute data connector actions (`discoveryengine.dataConnectors.executeAction`). |
+| **Calling User** (`${OAUTH_USER_ACCOUNT}`) | `roles/discoveryengine.admin` | Access Gemini Enterprise search apps and execute data connector actions (`discoveryengine.dataConnectors.executeAction`). |
 | | `roles/aiplatform.user` | Query Vertex AI reasoning engines and Gemini models. |
 | | `roles/secretmanager.viewer` | Verify OAuth secret metadata. |
-| **Discovery Engine Service Agent** (`service-<PROJECT_NUM>@gcp-sa-discoveryengine.iam.gserviceaccount.com`) | `roles/secretmanager.secretAccessor` | Read `jira_oauth_client` and `jira_oauth_secret` from Secret Manager during OAuth exchange. |
-| **Vertex AI Reasoning Engine / Compute SA** (`<PROJECT_NUM>-compute@developer.gserviceaccount.com`) | `roles/discoveryengine.admin` | Execute `dataConnector:invokeConnectorMcp` and query Discovery Engine on behalf of the agent container. |
+| **Discovery Engine Service Agent** (`service-${PROJECT_NUMBER}@gcp-sa-discoveryengine.iam.gserviceaccount.com`) | `roles/secretmanager.secretAccessor` | Read `jira_oauth_client` and `jira_oauth_secret` from Secret Manager during OAuth exchange. |
+| **Vertex AI Reasoning Engine / Compute SA** (`${PROJECT_NUMBER}-compute@developer.gserviceaccount.com`) | `roles/discoveryengine.admin` | Execute `dataConnector:invokeConnectorMcp` and query Discovery Engine on behalf of the agent container. |
 | | `roles/secretmanager.secretAccessor` | Read OAuth secrets if required for local/headless operations. |
 
 ---
@@ -366,11 +366,11 @@ gcloud services enable \
 ### 1. Activate the Python Virtual Environment
 You can activate the local environment directly:
 ```bash
-source /usr/local/google/home/jwortz/gemini-jira-federated/.venv/bin/activate
+source .venv/bin/activate
 ```
 Or run any tool with `uv run`:
 ```bash
-cd /usr/local/google/home/jwortz/gemini-jira-federated
+cd gemini-jira-federated
 uv run pytest -v
 ```
 
@@ -390,14 +390,14 @@ In your Atlassian App ([developer.atlassian.com/console/myapps](https://develope
 Run the automated setup script to store credentials, grant IAM permissions, create the Discovery Engine Authorization, and bind it to the registered Gemini Enterprise agent:
 ```bash
 # Sourcing the environment
-source /usr/local/google/home/jwortz/gemini-jira-federated/.venv/bin/activate
+source .venv/bin/activate
 
 # Execute setup
 python scripts/setup_jira_auth_provider.py \
-  --project-id="wortz-project-352116" \
-  --project-number="679926387543" \
+  --project-id="${PROJECT_ID}" \
+  --project-number="${PROJECT_NUMBER}" \
   --engine-id="grocery-workshop-engine" \
-  --agent-id="16003540595574963813"
+  --agent-id="${GEMINI_ENTERPRISE_AGENT_ID}"
 ```
 
 ### 4. Run Unit & Live Tests

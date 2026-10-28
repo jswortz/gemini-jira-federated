@@ -2,8 +2,8 @@
 
 ## 1. Objective
 Build a clean, tested Google ADK repository in `gemini-jira-federated` that demonstrates how to build a grounded RAG agent over the Gemini Enterprise **Federated Jira Data Connector**:
-- **Target Engine**: `projects/679926387543/locations/global/collections/default_collection/engines/grocery-workshop-engine`
-- **Target Agent ID**: `projects/679926387543/locations/global/collections/default_collection/engines/grocery-workshop-engine/assistants/default_assistant/agents/16003540595574963813`
+- **Target Engine**: `projects/${PROJECT_NUMBER}/locations/global/collections/default_collection/engines/grocery-workshop-engine`
+- **Target Agent ID**: `projects/${PROJECT_NUMBER}/locations/global/collections/default_collection/engines/grocery-workshop-engine/assistants/default_assistant/agents/${AGENT_ID}`
 - **Target Location**: `global` (Discovery Engine) / `us-central1` (Vertex AI Gemini)
 - **Delegated Auth Model**: Pattern 2 (Secret Manager + Discovery Engine Authorization Provider + End-User 3LO)
 
@@ -19,23 +19,23 @@ For detailed Google Cloud conceptual standards on agent authentication brokering
 ```mermaid
 flowchart TD
     subgraph Client["Client Interface"]
-        User["End User (admin@jwortz.altostrat.com)"]
+        User["End User (user@your-domain.com)"]
         ChatUI["Gemini Enterprise Chat UI / ADK Web Dev UI"]
         User -->|"1. User Query ('What issues are open?')"| ChatUI
     end
 
     subgraph AgentPlatform["Vertex AI Agent Engine & ADK Runtime"]
-        Agent["Jira Federated Agent\n(ADK LlmAgent / Reasoning Engine)\nAgent ID: 16003540595574963813"]
+        Agent["Jira Federated Agent\n(ADK LlmAgent / Reasoning Engine)\nAgent ID: ${AGENT_ID}"]
         ChatUI -->|"2. StreamAssist / Query"| Agent
         AgentClient["JiraFederatedConnectorClient\n(Google Bearer Token)"]
         Agent -->|"3. Execute Tool"| AgentClient
     end
 
     subgraph GoogleIAM["Google Cloud IAM & Discovery Engine Auth Manager"]
-        DE["Discovery Engine Gateway\n(jira-federated_1782320633397)"]
+        DE["Discovery Engine Gateway\n(jira-federated_...)"]
         AgentClient -->|"4. POST :invokeConnectorMcp\n(Google Bearer Token + tool name + args)"| DE
         
-        AuthVault["Auth Manager 3LO Token Vault\n(userIamPrincipal: admin@jwortz.altostrat.com)"]
+        AuthVault["Auth Manager 3LO Token Vault\n(userIamPrincipal: user@your-domain.com)"]
         DE -->|"5. Resolve Caller & Query 3LO Vault"| AuthVault
         
         AuthProvider["Authorization Provider\n(jira-oauth-provider)"]
@@ -114,13 +114,13 @@ gcloud services enable \
   iamcredentials.googleapis.com \
   serviceusage.googleapis.com \
   cloudresourcemanager.googleapis.com \
-  --project="wortz-project-352116"
+  --project="${PROJECT_ID}"
 ```
 
 | API Service Name | Service Endpoint | Purpose |
 | :--- | :--- | :--- |
-| **Discovery Engine API** | `discoveryengine.googleapis.com` | Gemini Enterprise apps, federated Jira connector (`jira-federated_1782320633397`), Auth Manager authorizations, and `:invokeConnectorMcp`. |
-| **Vertex AI API** | `aiplatform.googleapis.com` | Vertex AI Gemini models, Reasoning Engines (`1626276928405110784`), and Agent Engine runtime. |
+| **Discovery Engine API** | `discoveryengine.googleapis.com` | Gemini Enterprise apps, federated Jira connector (`jira-federated_...`), Auth Manager authorizations, and `:invokeConnectorMcp`. |
+| **Vertex AI API** | `aiplatform.googleapis.com` | Vertex AI Gemini models, Reasoning Engines, and Agent Engine runtime. |
 | **Secret Manager API** | `secretmanager.googleapis.com` | Storage of Atlassian OAuth Client ID and Secret (`jira_oauth_client`, `jira_oauth_secret`). |
 | **IAM API & Credentials API** | `iam.googleapis.com`, `iamcredentials.googleapis.com` | Service account token exchange, caller identity validation, and IAM permissions. |
 | **Service Usage & Resource Manager** | `serviceusage.googleapis.com`, `cloudresourcemanager.googleapis.com` | Quotas, service enablement, and project-level policy control. |
@@ -129,11 +129,11 @@ gcloud services enable \
 
 | Identity | Role | Purpose |
 | :--- | :--- | :--- |
-| **Calling User** (`admin@jwortz.altostrat.com`) | `roles/discoveryengine.admin` | Access Gemini Enterprise search apps and execute data connector actions (`discoveryengine.dataConnectors.executeAction`). |
+| **Calling User** (`${OAUTH_USER_ACCOUNT}`) | `roles/discoveryengine.admin` | Access Gemini Enterprise search apps and execute data connector actions (`discoveryengine.dataConnectors.executeAction`). |
 | | `roles/aiplatform.user` | Query Vertex AI Reasoning Engine agent. |
 | | `roles/secretmanager.viewer` | Read secret metadata. |
-| **Discovery Engine SA** (`service-679926387543@gcp-sa-discoveryengine.iam.gserviceaccount.com`) | `roles/secretmanager.secretAccessor` | Access `jira_oauth_client` and `jira_oauth_secret` during 3LO exchange. |
-| **Reasoning Engine / Compute SA** (`679926387543-compute@developer.gserviceaccount.com`) | `roles/discoveryengine.admin` | Execute `:invokeConnectorMcp` against the federated collection. |
+| **Discovery Engine SA** (`service-${PROJECT_NUMBER}@gcp-sa-discoveryengine.iam.gserviceaccount.com`) | `roles/secretmanager.secretAccessor` | Access `jira_oauth_client` and `jira_oauth_secret` during 3LO exchange. |
+| **Reasoning Engine / Compute SA** (`${PROJECT_NUMBER}-compute@developer.gserviceaccount.com`) | `roles/discoveryengine.admin` | Execute `:invokeConnectorMcp` against the federated collection. |
 | | `roles/secretmanager.secretAccessor` | Read app credentials if executing headless scripts. |
 
 ---
@@ -142,7 +142,7 @@ gcloud services enable \
 
 Activate the local virtual environment:
 ```bash
-source /usr/local/google/home/jwortz/gemini-jira-federated/.venv/bin/activate
+source .venv/bin/activate
 ```
 Or execute commands with `uv run`:
 ```bash
@@ -162,9 +162,9 @@ POST https://discoveryengine.googleapis.com/v1alpha/projects/{project}/locations
 ```mermaid
 flowchart LR
     Agent["ADK LlmAgent\n(Reasoning Engine / adk web)"]
-    DE["Discovery Engine\n(jira-federated_1782320633397)"]
+    DE["Discovery Engine\n(jira-federated_...)"]
     Vault["Auth Manager\nToken Vault (Per-User 3LO)"]
-    Jira["Atlassian Jira Cloud\n(jwortz.atlassian.net)"]
+    Jira["Atlassian Jira Cloud\n(your-instance.atlassian.net)"]
 
     Agent -->|"1. POST :invokeConnectorMcp\n(Google Bearer Token + tool name + args)"| DE
     DE -->|"2. Resolve User & Query Vault"| Vault

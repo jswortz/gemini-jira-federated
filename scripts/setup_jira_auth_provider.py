@@ -67,12 +67,12 @@ def parse_args() -> argparse.Namespace:
     config = ConnectorConfig()
     parser.add_argument(
         "--project-id",
-        default=config.project_id or "wortz-project-352116",
+        default=config.project_id or os.getenv("PROJECT_ID", ""),
         help="Google Cloud Project ID (default: %(default)s)",
     )
     parser.add_argument(
         "--project-number",
-        default=config.project_number or "679926387543",
+        default=config.project_number or os.getenv("PROJECT_NUMBER", ""),
         help="Google Cloud Project Number (default: %(default)s)",
     )
     parser.add_argument(
@@ -87,7 +87,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--agent-id",
-        default=os.getenv("GEMINI_ENTERPRISE_AGENT_ID", "16003540595574963813"),
+        default=os.getenv("GEMINI_ENTERPRISE_AGENT_ID", ""),
         help="Gemini Enterprise Agent ID (default: %(default)s)",
     )
     parser.add_argument(
@@ -117,7 +117,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--account",
-        default=config.oauth_user_account or "admin@jwortz.altostrat.com",
+        default=config.oauth_user_account or os.getenv("OAUTH_USER_ACCOUNT", ""),
         help="Google OAuth user account for authentication (default: %(default)s)",
     )
     parser.add_argument(
