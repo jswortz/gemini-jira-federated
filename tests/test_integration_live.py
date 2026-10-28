@@ -33,3 +33,21 @@ def test_live_oauth_and_federated_jira_search():
     issues_res = client.search_issues(access_token=token, max_results=10)
     assert issues_res["status"] == "success"
     assert issues_res["count"] > 0
+
+    # 4. Verify native MCP tools catalog inspection
+    tools_res = client.list_mcp_tools(access_token=token)
+    assert tools_res["status"] == "success"
+    tool_names = [t.get("name") for t in tools_res.get("tools", [])]
+    assert "search_issues" in tool_names
+    assert "get_issue" in tool_names
+    assert "create_comment" in tool_names
+
+    # 5. Verify live get_issue via MCP
+    issue_res = client.get_issue(access_token=token, issue_key="GEAP-3")
+    assert issue_res["status"] == "success"
+    assert issue_res["issue"]["key"] == "GEAP-3"
+
+    # 6. Verify live list_comments via MCP
+    comments_res = client.list_comments(access_token=token, issue_key="GEAP-3")
+    assert comments_res["status"] == "success"
+    assert len(comments_res["comments"]) > 0

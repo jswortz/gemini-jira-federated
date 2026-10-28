@@ -110,7 +110,45 @@ uv run python scripts/setup_jira_auth_provider.py
 uv run pytest -v
 ```
 
-## 4. Verification & Testing
+## 4. Option A: Direct Federated MCP Tool (`dataConnector:invokeConnectorMcp`)
+
+### Architecture: Zero Direct Atlassian Credentials in Agent
+Instead of the agent holding or negotiating Jira credentials directly, the Discovery Engine Federated Connector natively exposes Model Context Protocol (MCP) tool endpoints. The agent executes tools via the unified Google Cloud Discovery Engine RPC:
+
+```
+POST https://discoveryengine.googleapis.com/v1alpha/projects/{project}/locations/{location}/collections/{collection}/dataConnector:invokeConnectorMcp
+```
+
+```mermaid
+flowchart LR
+    Agent["ADK LlmAgent\n(Reasoning Engine / adk web)"]
+    DE["Discovery Engine\n(jira-federated_1782320633397)"]
+    Vault["Auth Manager\nToken Vault (Per-User 3LO)"]
+    Jira["Atlassian Jira Cloud\n(jwortz.atlassian.net)"]
+
+    Agent -->|"1. POST :invokeConnectorMcp\n(Google Bearer Token + tool name + args)"| DE
+    DE -->|"2. Resolve User & Query Vault"| Vault
+    Vault -->|"3. Retrieve User's Jira 3LO Token"| DE
+    DE -->|"4. Execute Jira Cloud Action"| Jira
+    Jira -->|"5. Return JSON Result"| DE
+    DE -->|"6. Return MCP Content Envelope"| Agent
+```
+
+### Supported MCP Actions in `jira-federated_1782320633397`
+The federated connector provides 32 built-in MCP tools, including:
+- **`search_issues`**: Searches issues using bounded or unbounded JQL queries (`{"query": "...", "maxResults": 20}`).
+- **`get_issue`**: Retrieves full issue fields, status, priority, and attachments (`{"Id": "GEAP-3"}`).
+- **`list_projects` / `search_projects`**: Lists or searches Jira projects accessible to the user.
+- **`create_comment`**: Posts an update or comment to a ticket (`{"IssueKey": "...", "Body": "..."}`).
+- **`update_comment`**: Updates an existing comment (`{"IssueKey": "...", "Id": ..., "Body": "..."}`).
+- **`list_comments`**: Lists all comments on a ticket (`{"IssueKey": "..."}`).
+- **`create_issue`**: Creates a new ticket (`{"ProjectKey": "...", "Summary": "...", "IssueTypeId": "10001", "Description": "..."}`).
+- **`upload_attachment`**: Attaches a file to a ticket (`{"IssueKey": "...", "InputFileName": "..."}`).
+- **`list_tools`**: Catalog inspection via `method: "tools/list"`.
+
+---
+
+## 5. Verification & Testing
 - Unit tests: `tests/test_config_and_auth.py`, `tests/test_jira_connector_client.py`, `tests/test_setup_jira_auth_provider.py`.
 - Live integration tests: `tests/test_integration_live.py`.
 - Atlassian 3LO parameter validation: RFC 6749 compliance (`response_type=code`, `redirect_uri`, `prompt=consent`).

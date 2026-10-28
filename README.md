@@ -172,7 +172,7 @@ This agent supports two complementary retrieval strategies over the federated co
 
 | Retrieval Mode | Primary API Endpoint | Strengths & Characteristics | Best For |
 | :--- | :--- | :--- | :--- |
-| **`mcp`** *(Default)* | `dataConnector:invokeConnectorMcp` | **Autonomous multi-turn planner loop**: Retries with broader filters if results are empty; bypasses the 50-item sample count ceiling; parses normalized issue fields & comments. | Complex lookups, multi-step queries, count/status verification, debugging. |
+| **`mcp`** *(Default / Option A)* | `dataConnector:invokeConnectorMcp` | **Native Model Context Protocol (MCP)**: Directly executes Jira tools (`search_issues`, `get_issue`, `list_projects`, `create_comment`, `create_issue`, `list_comments`) through Discovery Engine. Discovery Engine checks Auth Manager for the user's 3LO token, executes the action, and returns normalized JSON. | Granular searches, issue inspection, comment management, issue filing, interactive tools. |
 | **`stream_assist`** | `assistants/default_assistant:streamAssist` | **Native Gemini Enterprise Assistant**: Queries across all 10 per-entity data stores simultaneously; returns native `groundingChunks` citations and synthesized answers directly from Google's AssistantService. | High-level synthesis, cross-entity summaries, direct grounding citation benchmarks. |
 
 Configure in `.env`:
@@ -180,6 +180,39 @@ Configure in `.env`:
 # Options: 'mcp' (default) or 'stream_assist'
 JIRA_RETRIEVAL_MODE=mcp
 ```
+
+---
+
+## Option A: Direct Federated MCP Tool (`dataConnector:invokeConnectorMcp`)
+
+Discovery Engine federated connectors (`jira-federated_1782320633397`) natively expose Model Context Protocol (MCP) actions over a single Google Cloud REST/gRPC endpoint:
+
+```http
+POST https://discoveryengine.googleapis.com/v1alpha/projects/{project}/locations/{location}/collections/{collection}/dataConnector:invokeConnectorMcp
+Authorization: Bearer <GOOGLE_ACCESS_TOKEN>
+x-goog-user-project: <PROJECT_ID>
+Content-Type: application/json
+```
+
+### Request Flow
+1. **Google Authentication**: The agent invokes `dataConnector:invokeConnectorMcp` with the user's Google Cloud access token (or Vertex AI Agent Engine identity).
+2. **Auth Manager Lookup**: Discovery Engine identifies the caller and queries the **Google Cloud IAM Auth Manager** token vault for that user's linked Atlassian Jira 3LO OAuth token.
+3. **Secure Forwarding**: Discovery Engine dispatches the native MCP tool call to Atlassian Jira Cloud (`https://api.atlassian.com/ex/jira/{cloudId}/...`) with the user's Jira Bearer token.
+4. **Normalized Response**: Discovery Engine returns the normalized JSON payload inside an MCP content envelope (`{"result": {"isError": false, "content": [{"type": "text", "text": "..."}]}}`).
+
+### Supported MCP Tools
+
+| MCP Tool Name | ADK Agent Tool Wrapper | Description & Arguments |
+| :--- | :--- | :--- |
+| **`search_issues`** | `search_jira_issues` | Searches issues with JQL (`query`, `maxResults`, `sort_by`, `expanded_view`). Enforces bounded queries to prevent Jira 400 errors. |
+| **`get_issue`** | `get_jira_issue` | Fetches full issue details by key (`Id: "GEAP-3"`), including status, priority, reporter, assignee, attachments, and sub-tasks. |
+| **`list_projects`** | `list_jira_projects` | Lists all Jira projects accessible to the user (`page_size`, `page_token`). |
+| **`create_comment`** | `create_jira_comment` | Posts a new comment to a Jira issue (`IssueKey`, `Body`). |
+| **`update_comment`** | *(client method)* | Updates an existing comment on an issue (`IssueKey`, `Id`, `Body`). |
+| **`list_comments`** | `list_jira_comments` | Lists comment threads on an issue (`IssueKey`, `page_size`). |
+| **`create_issue`** | `create_jira_issue` | Files a new ticket in Jira Cloud (`ProjectKey`, `Summary`, `IssueTypeId`, `Description`, `PriorityName`). |
+| **`upload_attachment`** | *(client method)* | Attaches a file to a ticket (`IssueKey`, `InputFileName`, `Content`). |
+| **`list_tools`** | *(client method)* | Queries Discovery Engine with `method: "tools/list"` to inspect the 32 exposed connector tools. |
 
 ---
 

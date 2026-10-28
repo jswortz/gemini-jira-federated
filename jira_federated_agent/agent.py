@@ -208,6 +208,119 @@ def get_jira_issue(
     return _CLIENT.get_issue(access_token=token, issue_key=issue_key)
 
 
+def create_jira_comment(
+    issue_key: str,
+    comment_body: str,
+    tool_context: ToolContext | None = None,
+) -> dict[str, Any]:
+    """Creates a new comment on a Jira issue using the Gemini Enterprise Federated MCP Connector.
+
+    Args:
+        issue_key: The Jira issue key (e.g. 'GEAP-3' or 'CCS-50').
+        comment_body: The text of the comment to post to Jira.
+    """
+    token, auth_source = resolve_user_oauth_token(
+        tool_context=tool_context,
+        account=_CONFIG.oauth_user_account,
+        project_id=_CONFIG.project_id,
+    )
+    if not token:
+        return {
+            "status": "auth_required",
+            "auth_source": auth_source,
+            "authorization_uri": _CONFIG.default_atlassian_auth_uri,
+            "message": (
+                f"User OAuth authentication is required before commenting on '{issue_key}'. "
+                "Please authenticate using the login card in the chat, or open this authorization URL:\n"
+                f"{_CONFIG.default_atlassian_auth_uri}"
+            ),
+        }
+    return _CLIENT.create_comment(
+        access_token=token, issue_key=issue_key, body=comment_body
+    )
+
+
+def list_jira_comments(
+    issue_key: str,
+    page_size: int = 50,
+    tool_context: ToolContext | None = None,
+) -> dict[str, Any]:
+    """Retrieves all comments for a specific Jira issue using the Federated MCP Connector.
+
+    Args:
+        issue_key: The Jira issue key (e.g. 'GEAP-3' or 'CCS-50').
+        page_size: Maximum number of comments to return (default 50).
+    """
+    token, auth_source = resolve_user_oauth_token(
+        tool_context=tool_context,
+        account=_CONFIG.oauth_user_account,
+        project_id=_CONFIG.project_id,
+    )
+    if not token:
+        return {
+            "status": "auth_required",
+            "auth_source": auth_source,
+            "authorization_uri": _CONFIG.default_atlassian_auth_uri,
+            "message": (
+                f"User OAuth authentication is required before viewing comments for '{issue_key}'. "
+                "Please authenticate using the login card in the chat, or open this authorization URL:\n"
+                f"{_CONFIG.default_atlassian_auth_uri}"
+            ),
+        }
+    return _CLIENT.list_comments(
+        access_token=token, issue_key=issue_key, page_size=page_size
+    )
+
+
+def create_jira_issue(
+    project_key: str,
+    summary: str,
+    issue_type: str = "Task",
+    issue_type_id: str = "10001",
+    description: str = "",
+    priority: str = "Medium",
+    assignee_account_id: str | None = None,
+    tool_context: ToolContext | None = None,
+) -> dict[str, Any]:
+    """Creates a new Jira ticket in Jira Cloud using the Federated MCP Connector.
+
+    Args:
+        project_key: Target Jira project key (e.g. 'GEAP' or 'CCS').
+        summary: Title or summary of the new issue.
+        issue_type: Issue type name (e.g. 'Task', 'Bug', 'Story').
+        issue_type_id: Numeric issue type ID (e.g. '10001' for Task, '10043' for Bug).
+        description: Optional detailed description of the issue.
+        priority: Priority name (e.g. 'Low', 'Medium', 'High', default 'Medium').
+        assignee_account_id: Optional Atlassian account ID for the assignee.
+    """
+    token, auth_source = resolve_user_oauth_token(
+        tool_context=tool_context,
+        account=_CONFIG.oauth_user_account,
+        project_id=_CONFIG.project_id,
+    )
+    if not token:
+        return {
+            "status": "auth_required",
+            "auth_source": auth_source,
+            "authorization_uri": _CONFIG.default_atlassian_auth_uri,
+            "message": (
+                "User OAuth authentication is required before creating a Jira issue. "
+                "Please authenticate using the login card in the chat, or open this authorization URL:\n"
+                f"{_CONFIG.default_atlassian_auth_uri}"
+            ),
+        }
+    return _CLIENT.create_issue(
+        access_token=token,
+        project_key=project_key,
+        summary=summary,
+        issue_type_name=issue_type,
+        issue_type_id=issue_type_id,
+        description=description,
+        priority_name=priority,
+        assignee_account_id=assignee_account_id,
+    )
+
+
 def ask_gemini_enterprise_jira(
     question: str,
     tool_context: ToolContext | None = None,
@@ -255,6 +368,8 @@ AGENT_INSTRUCTION = f"""You are a Grounded Jira Assistant powered by Google ADK 
 1. **Always Ground Responses in Live Federated Data with End-User 3LO Permissions**:
    - Access to Jira is strictly governed by end-user 3-Legged OAuth (3LO). Every Jira query is executed live under the calling user's individual Jira permissions—users only see Jira issues they are authorized to access.
    - Use `search_jira_issues`, `get_jira_issue`, and `list_jira_projects` to retrieve live Jira tickets and projects from the federated connector.
+   - Use `list_jira_comments` to inspect full issue comment threads, and `create_jira_comment` to add updates or replies.
+   - Use `create_jira_issue` to report new bugs or file tasks directly into Jira Cloud.
    - For high-level synthesis questions requiring blended answers across all 10 entities (issues, comments, boards, projects), use `ask_gemini_enterprise_jira`.
    - If a user asks to "list all Jira issues" or "what Jira issues can you see?", call `search_jira_issues(query="", max_results=20)` with an empty `query` to retrieve the latest issues across all projects.
 2. **OAuth 3LO Verification & Consent Handling**:
@@ -279,6 +394,9 @@ root_agent = LlmAgent(
         list_jira_projects,
         search_jira_issues,
         get_jira_issue,
+        create_jira_comment,
+        create_jira_issue,
+        list_jira_comments,
         ask_gemini_enterprise_jira,
     ],
 )
