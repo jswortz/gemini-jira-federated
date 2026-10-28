@@ -72,7 +72,20 @@ def extract_token_from_tool_context(tool_context: ToolContext | Any | None) -> s
     if isinstance(state, dict) and state.get(STATE_TOKEN_KEY):
         return str(state[STATE_TOKEN_KEY])
 
-    # 2. Check ADK AuthConfig exchange response if interactive OAuth was used
+    # 2. Check ADK get_credential (Agent Platform / Auth Manager)
+    if hasattr(tool_context, "get_credential"):
+        for cred_key in (CREDENTIAL_KEY, "jira_federated_google_oauth", "gemini_enterprise_oauth"):
+            try:
+                cred = tool_context.get_credential(cred_key)
+                if cred and getattr(cred, "oauth2", None) and getattr(cred.oauth2, "access_token", None):
+                    token = str(cred.oauth2.access_token)
+                    if isinstance(state, dict):
+                        state[STATE_TOKEN_KEY] = token
+                    return token
+            except Exception:
+                pass
+
+    # 3. Check ADK AuthConfig exchange response if interactive OAuth was used
     if hasattr(tool_context, "get_auth_response"):
         try:
             auth_cfg = build_adk_oauth_config()
@@ -173,7 +186,17 @@ def resolve_user_oauth_token(
         return env_token, "env:GOOGLE_OAUTH_ACCESS_TOKEN"
 
     # 4. Load and refresh OAuth2 user credentials for the configured account
-    target_account = account or os.getenv("OAUTH_USER_ACCOUNT", "")
+    ctx_user_id = None
+    if tool_context is not None:
+        ctx_user_id = getattr(tool_context, "user_id", None)
+        if not ctx_user_id and hasattr(tool_context, "_invocation_context"):
+            ctx_user_id = getattr(tool_context._invocation_context, "user_id", None)
+
+    target_account = (
+        account
+        or (str(ctx_user_id).strip() if ctx_user_id and "@" in str(ctx_user_id) else "")
+        or os.getenv("OAUTH_USER_ACCOUNT", "")
+    )
     target_project = (
         project_id
         or os.getenv("DISCOVERY_ENGINE_PROJECT_ID")

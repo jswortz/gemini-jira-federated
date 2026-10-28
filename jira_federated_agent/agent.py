@@ -7,12 +7,28 @@ from typing import Any
 from google.adk.agents import LlmAgent
 from google.adk.tools.tool_context import ToolContext
 
-from jira_federated_agent.auth import (
-    configure_vertex_ai_user_credentials,
-    resolve_user_oauth_token,
-)
-from jira_federated_agent.config import ConnectorConfig
-from jira_federated_agent.jira_connector_client import JiraFederatedConnectorClient
+try:
+    from jira_federated_agent.auth import (
+        configure_vertex_ai_user_credentials,
+        resolve_user_oauth_token,
+    )
+    from jira_federated_agent.config import ConnectorConfig
+    from jira_federated_agent.jira_connector_client import JiraFederatedConnectorClient
+except ImportError:
+    try:
+        from .auth import (
+            configure_vertex_ai_user_credentials,
+            resolve_user_oauth_token,
+        )
+        from .config import ConnectorConfig
+        from .jira_connector_client import JiraFederatedConnectorClient
+    except ImportError:
+        from auth import (
+            configure_vertex_ai_user_credentials,
+            resolve_user_oauth_token,
+        )
+        from config import ConnectorConfig
+        from jira_connector_client import JiraFederatedConnectorClient
 
 # Bridge google.auth.default() in memory to the configured OAuth user account
 # so Vertex AI (Gemini) and Discovery Engine work seamlessly in `adk web`.
@@ -214,13 +230,15 @@ AGENT_INSTRUCTION = f"""You are a Grounded Jira Assistant powered by Google ADK 
 - **Active Retrieval Mode**: `{_CONFIG.retrieval_mode}`
 
 ### Operational Rules
-1. **Always Ground Responses in Live Federated Data**:
+1. **Always Ground Responses in Live Federated Data with End-User 3LO Permissions**:
+   - Access to Jira is strictly governed by end-user 3-Legged OAuth (3LO). Every Jira query is executed live under the calling user's individual Jira permissions—users only see Jira issues they are authorized to access.
    - Use `search_jira_issues`, `get_jira_issue`, and `list_jira_projects` to retrieve live Jira tickets and projects from the federated connector.
    - For high-level synthesis questions requiring blended answers across all 10 entities (issues, comments, boards, projects), use `ask_gemini_enterprise_jira`.
    - If a user asks to "list all Jira issues" or "what Jira issues can you see?", call `search_jira_issues(query="", max_results=20)` with an empty `query` to retrieve the latest issues across all projects.
-2. **OAuth Verification & Consent Handling**:
-   - When asked about authentication status or if a tool reports an authorization error, call `check_jira_oauth_status()`.
-   - If the user is not yet authorized in the connector vault, share the `authorization_uri` from `check_jira_oauth_status()` and offer to complete the flow via `complete_jira_oauth_consent(redirect_url)` once they paste the callback URL.
+2. **OAuth 3LO Verification & Consent Handling**:
+   - When asked about authentication status or if a tool reports an authorization error or missing credentials, call `check_jira_oauth_status()`.
+   - If the user is not yet authorized in the connector vault (`authorized: false`), share the `authorization_uri` from `check_jira_oauth_status()` and prompt the user to authorize Jira Cloud in their browser.
+   - Offer to complete the consent handshake via `complete_jira_oauth_consent(redirect_url)` once they paste the resulting callback redirect URL (`https://vertexaisearch.cloud.google.com/oauth-redirect?code=...`).
 3. **Clear Citations**:
    - Format Jira issues in a clean Markdown table or structured bullet list including the **Issue Key** (as a clickable link `[KEY]({_CONFIG.jira_instance_uri.rstrip('/')}/browse/KEY)`), **Title/Summary**, **Project**, **Type**, **Status**, **Priority**, **Reporter/Assignee**, and any relevant **Description** or **Comments**.
 """

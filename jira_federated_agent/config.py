@@ -52,7 +52,10 @@ class ConnectorConfig:
         )
     )
     engine_id: str = field(
-        default_factory=lambda: os.getenv("DISCOVERY_ENGINE_ID", "")
+        default_factory=lambda: (
+            os.getenv("DISCOVERY_ENGINE_ID")
+            or "grocery-workshop-engine"
+        )
     )
     collection_id: str = field(
         default_factory=lambda: os.getenv("JIRA_CONNECTOR_COLLECTION_ID", "")

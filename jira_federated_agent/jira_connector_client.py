@@ -7,11 +7,25 @@ import logging
 from typing import Any
 import requests
 
-from jira_federated_agent.config import (
-    ConnectorConfig,
-    build_safe_jql,
-    validate_issue_key,
-)
+try:
+    from jira_federated_agent.config import (
+        ConnectorConfig,
+        build_safe_jql,
+        validate_issue_key,
+    )
+except ImportError:
+    try:
+        from .config import (
+            ConnectorConfig,
+            build_safe_jql,
+            validate_issue_key,
+        )
+    except ImportError:
+        from config import (
+            ConnectorConfig,
+            build_safe_jql,
+            validate_issue_key,
+        )
 
 logger = logging.getLogger(__name__)
 
