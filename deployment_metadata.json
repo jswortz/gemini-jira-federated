@@ -1,0 +1,9 @@
+{
+  "remote_agent_runtime_id": "projects/${PROJECT_NUMBER}/locations/us-central1/reasoningEngines/1626276928405110784",
+  "deployment_target": "agent_runtime",
+  "gemini_enterprise_app_id": "projects/${PROJECT_NUMBER}/locations/global/collections/default_collection/engines/grocery-workshop-engine",
+  "gemini_enterprise_agent_id": "projects/${PROJECT_NUMBER}/locations/global/collections/default_collection/engines/grocery-workshop-engine/assistants/default_assistant/agents/16003540595574963813",
+  "display_name": "Jira Federated Agent",
+  "agent_directory": "jira_federated_agent",
+  "deployment_timestamp": "2026-10-28T19:48:44.671876Z"
+}
