@@ -134,10 +134,11 @@ flowchart TD
     end
 ```
 
-### Deployment Status Analysis
+### Deployment Status & Architectural Analysis
 - **Streamable-HTTP `/dataConnector/mcp`**: **Live in Production on Discovery Engine** (`https://discoveryengine.googleapis.com/v1/projects/{project_number}/locations/{location}/collections/{collection}/dataConnector/mcp`).
-- **Google Cloud Agent Registry**: **Live in Production on GCP** (`agentregistry.googleapis.com`). In our project, the connector is already registered as `projects/${PROJECT_ID}/locations/global/mcpServers/agentregistry-00000000-0000-0000-cdb8-8607e74a4bcf`.
-- **ADK SDK**: `google.adk.integrations.agent_registry.AgentRegistry` is published in the official Google ADK SDK.
+- **Google Cloud Agent Registry**: **Live in Production on GCP** (`agentregistry.googleapis.com`). The connector is auto-registered as `projects/${PROJECT_ID}/locations/global/mcpServers/agentregistry-00000000-0000-0000-cdb8-8607e74a4bcf` with `RuntimeReference` linking to `dataConnector` and declaring native tools (`create_issue`, `update_issue`, `create_comment`, etc.).
+- **IAP Access & Agent Gateway**: The `/dataConnector/mcp` endpoint validates the `x-goog-iap-egress-jwt-assertion` header injected by Vertex AI Agent Gateway. Raw calls from outside the Agent Gateway perimeter fail with header validation errors.
+- **In-Process Toolset vs Stdio Bridge**: The earlier `JIRA_MCP_TRANSPORT=builtin|inprocess` toggle allowed choosing between a FastMCP subprocess bridge and direct in-memory calls. We streamlined to `DiscoveryEngineMcpToolset` 100% in-process, removing subprocess overhead, pipe serialization, and FastMCP deprecation warnings while retaining full 3LO Auth Manager integration.
 
 ---
 

@@ -359,39 +359,71 @@ flowchart TD
 ### Pattern B: Google Cloud Agent Registry & Streamable-HTTP (`/dataConnector/mcp`)
 - **API Method**: `https://discoveryengine.googleapis.com/v1/projects/{project_number}/locations/{location}/collections/{collection}/dataConnector/mcp`
 - **Deployment Status**: **Live in Production on Discovery Engine** (implements full MCP Streamable-HTTP spec with `POST`, `GET` SSE streaming, and `DELETE` session termination).
-- **Agent Registry Resource**: Registered under Google Cloud Agent Registry (`agentregistry.googleapis.com`) as:
-  `projects/${PROJECT_ID}/locations/global/mcpServers/agentregistry-00000000-0000-0000-cdb8-8607e74a4bcf`
-  with display name `Jira Cloud - jira-federated_1782320633397`.
-- **ADK Code Pattern**:
-  ```python
-  import os
-  from google.adk.agents import LlmAgent
-  from google.adk.auth.credential_manager import CredentialManager
-  from google.adk.integrations.agent_identity import GcpAuthProvider
-  from google.adk.integrations.agent_registry import AgentRegistry
 
-  project_id = os.environ.get("PROJECT_ID")
-  location = os.environ.get("DISCOVERY_ENGINE_LOCATION", "global")
+#### 1. How the Connector is Registered as an MCP Server
+When a Federated DataConnector (such as `jira-federated_...`) is created in Gemini Enterprise / Discovery Engine, Google automatically provisions an MCP Server resource in **Google Cloud Agent Registry** (`agentregistry.googleapis.com`):
+```bash
+# Inspect the registered MCP server in Google Cloud Agent Registry
+gcloud alpha agent-registry mcp-servers describe \
+  agentregistry-00000000-0000-0000-cdb8-8607e74a4bcf \
+  --location=global \
+  --project="${PROJECT_ID}"
+```
 
-  # Register Agent Identity Auth Provider for automated 3LO brokering
-  CredentialManager.register_auth_provider(GcpAuthProvider())
+The registered resource contains:
+- **`RuntimeReference`**: Points back to the parent Discovery Engine DataConnector (`//discoveryengine.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/collections/${COLLECTION_ID}/dataConnector`).
+- **`interfaces`**: Advertises the Streamable-HTTP endpoint (`https://discoveryengine.googleapis.com/v1/.../dataConnector/mcp`) with `protocolBinding: "JSONRPC"`.
+- **`mcpServerId`**: Unique URN (`urn:mcp:projects-...:dataConnector`).
+- **`tools`**: Declarations for native Jira operations (`create_issue`, `update_issue`, `change_issue_status`, `create_comment`, `update_comment`, `upload_attachment`).
 
-  # Initialize Agent Registry client
-  registry = AgentRegistry(project_id=project_id, location=location)
+#### 2. Identity-Aware Proxy (IAP) Access & Egress JWT Assertions
+The `/dataConnector/mcp` endpoint is protected by Google Cloud Identity-Aware Proxy (IAP) and Vertex AI Agent Gateway:
+- **Inside Vertex AI Agent Engine / Agent Gateway**: The runtime automatically injects an IAP Egress JWT Assertion header (`x-goog-iap-egress-jwt-assertion`) into outbound calls. This assertion cryptographically signs the caller's Google identity (`userIamPrincipal`), allowing Discovery Engine to look up the caller's delegated Jira 3LO OAuth token in Auth Manager.
+- **Outside Agent Gateway (Local CLI / Raw HTTP)**: Invoking `/dataConnector/mcp` directly without the Agent Gateway IAP header fails with:
+  `generic::invalid_argument: The request was invalid: failed to fetch request headers`
+- **Why Pattern A is Used for Standalone Runtimes**: Pattern A (`:invokeConnectorMcp`) authenticates directly via standard Google Bearer tokens (`Authorization: Bearer $(gcloud auth print-access-token)`), allowing hermetic execution anywhere (local CLI, `adk web`, Cloud Run, and tests) without needing an Agent Gateway mesh.
 
-  # Auto-resolve connector Streamable-HTTP URI and IAM bindings
-  mcp_toolset = registry.get_mcp_toolset(
-      mcp_server_name=f"projects/{project_id}/locations/{location}/mcpServers/agentregistry-00000000-0000-0000-cdb8-8607e74a4bcf",
-      continue_uri="https://vertexaisearch.cloud.google.com/oauth-redirect",
-  )
+#### 3. What Was `JIRA_MCP_TRANSPORT=builtin|inprocess`?
+In earlier revisions of the codebase, we provided an environment toggle:
+- **`JIRA_MCP_TRANSPORT=builtin`**: Used ADK's `google.adk.tools.mcp_tool.McpToolset` with `StdioConnectionParams`, spawning `jira_federated_agent.mcp_server` as a local subprocess that bridged MCP stdio JSON-RPC calls into Discovery Engine REST calls.
+- **`JIRA_MCP_TRANSPORT=inprocess`**: Used `DiscoveryEngineMcpToolset` (an ADK `BaseToolset` subclass) to call `:invokeConnectorMcp` directly in Python memory.
 
-  # Pass directly to ADK agent
-  root_agent = LlmAgent(
-      name="jira_agent_registry",
-      model="gemini-2.5-flash",
-      tools=[mcp_toolset],
-  )
-  ```
+**Why it was streamlined**:
+We eliminated `mcp_server.py` and the `JIRA_MCP_TRANSPORT` toggle to produce a clean, production-grade codebase:
+- `jira_federated_agent` now directly uses [`DiscoveryEngineMcpToolset`](jira_federated_agent/mcp_toolset.py) 100% in-process.
+- Zero subprocess startup delay, zero stdio pipe serialization, and zero deprecation warnings.
+- Preserves the same external tool schema and 3LO Auth Manager security model.
+
+#### 4. ADK Code Pattern for Agent Registry:
+```python
+import os
+from google.adk.agents import LlmAgent
+from google.adk.auth.credential_manager import CredentialManager
+from google.adk.integrations.agent_identity import GcpAuthProvider
+from google.adk.integrations.agent_registry import AgentRegistry
+
+project_id = os.environ.get("PROJECT_ID")
+location = os.environ.get("DISCOVERY_ENGINE_LOCATION", "global")
+
+# Register Agent Identity Auth Provider for automated 3LO brokering
+CredentialManager.register_auth_provider(GcpAuthProvider())
+
+# Initialize Agent Registry client
+registry = AgentRegistry(project_id=project_id, location=location)
+
+# Auto-resolve connector Streamable-HTTP URI and IAM bindings
+mcp_toolset = registry.get_mcp_toolset(
+    mcp_server_name=f"projects/{project_id}/locations/{location}/mcpServers/agentregistry-00000000-0000-0000-cdb8-8607e74a4bcf",
+    continue_uri="https://vertexaisearch.cloud.google.com/oauth-redirect",
+)
+
+# Pass directly to ADK agent
+root_agent = LlmAgent(
+    name="jira_agent_registry",
+    model="gemini-2.5-flash",
+    tools=[mcp_toolset],
+)
+```
 - **Requirements**:
   1. `pip install "google-adk[agent-identity]" "google-adk[a2a]"`
   2. Runtime execution behind Vertex AI Agent Gateway / IAP Egress, or authenticated via `GcpAuthProviderScheme`.
