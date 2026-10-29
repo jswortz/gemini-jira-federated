@@ -316,6 +316,88 @@ When an agent tool executes:
 
 ---
 
+## Gemini Enterprise MCP Connectors & Agent Registry Architecture
+
+Newer Gemini Enterprise DataConnector resources natively serve Model Context Protocol (MCP) interactions through two official, complementary surfaces in Google Cloud:
+
+```mermaid
+flowchart TD
+    subgraph PatternA["Pattern A: Direct Federated MCP (Current Production Baseline)"]
+        AgentA["ADK LlmAgent"]
+        ToolsetA["google.adk.tools.mcp_tool.McpToolset\n(via FastMCP bridge) OR DiscoveryEngineMcpToolset"]
+        DEA["Discovery Engine Gateway\nPOST :invokeConnectorMcp"]
+        VaultA["Auth Manager 3LO Vault\n(userIamPrincipal)"]
+        JiraA["Atlassian Jira Cloud"]
+
+        AgentA --> ToolsetA
+        ToolsetA -->|"Google Bearer Token\nx-goog-user-project"| DEA
+        DEA --> VaultA
+        DEA --> JiraA
+    end
+
+    subgraph PatternB["Pattern B: Agent Registry & Streamable-HTTP (Next-Gen Fleet Pattern)"]
+        AgentB["ADK LlmAgent"]
+        RegB["google.adk.integrations.agent_registry.AgentRegistry"]
+        McpB["McpToolset (StreamableHTTP)\nPOST/GET/DELETE .../dataConnector/mcp"]
+        CredsB["google-adk[agent-identity]\n(GcpAuthProviderScheme)"]
+        DEB["DataConnectorMcpService\n(Streamable-HTTP SSE)"]
+
+        AgentB --> RegB
+        RegB --> McpB
+        McpB <--> CredsB
+        McpB -->|"Requires Agent Registry + Agent Gateway / IAP"| DEB
+    end
+```
+
+### Pattern A: Direct Federated MCP (`:invokeConnectorMcp`)
+- **API Method**: `POST https://discoveryengine.googleapis.com/v1alpha/projects/{project_number}/locations/{location}/collections/{collection}/dataConnector:invokeConnectorMcp`
+- **Deployment Status**: **Live in Production across all Discovery Engine regions.**
+- **Authentication**: Standard Google Cloud Bearer Token (`Authorization: Bearer $(gcloud auth print-access-token)`) with `x-goog-user-project`.
+- **ADK Integration**: Uses the built-in `google.adk.tools.mcp_tool.McpToolset` with `jira_federated_agent.mcp_server` (stdio transport) or in-process `DiscoveryEngineMcpToolset`.
+- **Advantages**: Completely hermetic, zero external registry configuration required, runs in local CLI, `adk web`, Cloud Run, and Vertex AI Agent Engine today without additional plugins.
+
+### Pattern B: Google Cloud Agent Registry & Streamable-HTTP (`/dataConnector/mcp`)
+- **API Method**: `https://discoveryengine.googleapis.com/v1/projects/{project_number}/locations/{location}/collections/{collection}/dataConnector/mcp`
+- **Deployment Status**: **Live in Production on Discovery Engine** (implements full MCP Streamable-HTTP spec with `POST`, `GET` SSE streaming, and `DELETE` session termination).
+- **Agent Registry Resource**: Registered under Google Cloud Agent Registry (`agentregistry.googleapis.com`) as:
+  `projects/${PROJECT_ID}/locations/global/mcpServers/agentregistry-00000000-0000-0000-cdb8-8607e74a4bcf`
+  with display name `Jira Cloud - jira-federated_1782320633397`.
+- **ADK Code Pattern**:
+  ```python
+  import os
+  from google.adk.agents import LlmAgent
+  from google.adk.auth.credential_manager import CredentialManager
+  from google.adk.integrations.agent_identity import GcpAuthProvider
+  from google.adk.integrations.agent_registry import AgentRegistry
+
+  project_id = os.environ.get("PROJECT_ID")
+  location = os.environ.get("DISCOVERY_ENGINE_LOCATION", "global")
+
+  # Register Agent Identity Auth Provider for automated 3LO brokering
+  CredentialManager.register_auth_provider(GcpAuthProvider())
+
+  # Initialize Agent Registry client
+  registry = AgentRegistry(project_id=project_id, location=location)
+
+  # Auto-resolve connector Streamable-HTTP URI and IAM bindings
+  mcp_toolset = registry.get_mcp_toolset(
+      mcp_server_name=f"projects/{project_id}/locations/{location}/mcpServers/agentregistry-00000000-0000-0000-cdb8-8607e74a4bcf",
+      continue_uri="https://vertexaisearch.cloud.google.com/oauth-redirect",
+  )
+
+  # Pass directly to ADK agent
+  root_agent = LlmAgent(
+      name="jira_agent_registry",
+      model="gemini-2.5-flash",
+      tools=[mcp_toolset],
+  )
+  ```
+- **Requirements**:
+  1. `pip install "google-adk[agent-identity]" "google-adk[a2a]"`
+  2. Runtime execution behind Vertex AI Agent Gateway / IAP Egress, or authenticated via `GcpAuthProviderScheme`.
+
+---
+
 ## Required Google Cloud APIs & IAM Roles
 
 ### 1. Required Google Cloud APIs

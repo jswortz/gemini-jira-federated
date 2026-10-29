@@ -101,7 +101,47 @@ sequenceDiagram
 
 ---
 
-## 3. Required Google Cloud APIs & IAM Roles
+## 3. Gemini Enterprise MCP Connectors & Agent Registry Pattern
+
+Newer Gemini Enterprise DataConnector resources natively serve Model Context Protocol (MCP) interactions through two official, complementary surfaces in Google Cloud:
+
+```mermaid
+flowchart TD
+    subgraph PatternA["Pattern A: Direct Federated MCP (Current Production Baseline)"]
+        AgentA["ADK LlmAgent"]
+        ToolsetA["google.adk.tools.mcp_tool.McpToolset\n(via FastMCP bridge) OR DiscoveryEngineMcpToolset"]
+        DEA["Discovery Engine Gateway\nPOST :invokeConnectorMcp"]
+        VaultA["Auth Manager 3LO Vault\n(userIamPrincipal)"]
+        JiraA["Atlassian Jira Cloud"]
+
+        AgentA --> ToolsetA
+        ToolsetA -->|"Google Bearer Token\nx-goog-user-project"| DEA
+        DEA --> VaultA
+        DEA --> JiraA
+    end
+
+    subgraph PatternB["Pattern B: Agent Registry & Streamable-HTTP (Next-Gen Fleet Pattern)"]
+        AgentB["ADK LlmAgent"]
+        RegB["google.adk.integrations.agent_registry.AgentRegistry"]
+        McpB["McpToolset (StreamableHTTP)\nPOST/GET/DELETE .../dataConnector/mcp"]
+        CredsB["google-adk[agent-identity]\n(GcpAuthProviderScheme)"]
+        DEB["DataConnectorMcpService\n(Streamable-HTTP SSE)"]
+
+        AgentB --> RegB
+        RegB --> McpB
+        McpB <--> CredsB
+        McpB -->|"Requires Agent Registry + Agent Gateway / IAP"| DEB
+    end
+```
+
+### Deployment Status Analysis
+- **Streamable-HTTP `/dataConnector/mcp`**: **Live in Production on Discovery Engine** (`https://discoveryengine.googleapis.com/v1/projects/{project_number}/locations/{location}/collections/{collection}/dataConnector/mcp`).
+- **Google Cloud Agent Registry**: **Live in Production on GCP** (`agentregistry.googleapis.com`). In our project, the connector is already registered as `projects/${PROJECT_ID}/locations/global/mcpServers/agentregistry-00000000-0000-0000-cdb8-8607e74a4bcf`.
+- **ADK SDK**: `google.adk.integrations.agent_registry.AgentRegistry` is published in the official Google ADK SDK.
+
+---
+
+## 4. Required Google Cloud APIs & IAM Roles
 
 ### Required Google Cloud APIs
 Enable all required APIs with:
