@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import getpass
 import json
 import logging
@@ -341,8 +342,11 @@ def get_or_create_discovery_engine_authorization(
     create_url = f"{base_url}/projects/{project_number}/locations/{location}/authorizations?authorizationId={authorization_id}"
 
     if dry_run:
+        masked_payload = copy.deepcopy(payload)
+        if "serverSideOauth2" in masked_payload and "clientSecret" in masked_payload["serverSideOauth2"]:
+            masked_payload["serverSideOauth2"]["clientSecret"] = "******"
         logger.info("[DRY-RUN] Would create Authorization via POST %s with payload:", create_url)
-        logger.info(json.dumps(payload, indent=2))
+        logger.info(json.dumps(masked_payload, indent=2))
         return {"name": auth_name, "serverSideOauth2": payload["serverSideOauth2"]}
 
     logger.info("Creating Discovery Engine Authorization %s...", auth_name)

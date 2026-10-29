@@ -314,6 +314,14 @@ def configure_vertex_ai_user_credentials(
     target OAuth user account without writing any credential files to disk.
     """
     target_account = account or os.getenv("OAUTH_USER_ACCOUNT", "")
+    if not target_account:
+        try:
+            target_account = subprocess.check_output(
+                ["gcloud", "config", "get-value", "account"], text=True
+            ).strip()
+        except Exception:
+            pass
+
     target_project = (
         project_id
         or os.getenv("DISCOVERY_ENGINE_PROJECT_ID")

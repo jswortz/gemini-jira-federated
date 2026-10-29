@@ -15,7 +15,7 @@ _TEST_DEFAULTS = {
     "JIRA_CONNECTOR_COLLECTION_ID": "jira-federated_test",
     "JIRA_INSTANCE_URI": "https://test-jira.atlassian.net",
     "OAUTH_USER_ACCOUNT": "test-user@example.com",
-    "JIRA_RETRIEVAL_MODE": "mcp",
+    "JIRA_OAUTH_CLIENT_ID": "test-client-id",
     "JIRA_OAUTH_CLIENT_SECRET_NAME": "jira_oauth_client",
     "JIRA_OAUTH_SECRET_SECRET_NAME": "jira_oauth_secret",
     "JIRA_CLIENT_ID_SECRET_PATH": "projects/123456789012/secrets/jira_oauth_client",

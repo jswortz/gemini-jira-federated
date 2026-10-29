@@ -163,46 +163,6 @@ def test_list_projects_parses_entities():
         assert res["projects"][0]["name"] == "Grocery-store"
 
 
-def test_stream_assist_parses_chunks():
-    client = JiraFederatedConnectorClient(config=ConnectorConfig())
-    stream_payload = [
-        {
-            "answer": {
-                "replies": [
-                    {
-                        "groundedContent": {
-                            "content": {
-                                "text": "Here are 5 issues from project CCS with links."
-                            }
-                        }
-                    }
-                ],
-                "citations": {
-                    "groundingChunks": [
-                        {
-                            "web": {
-                                "uri": f"{client.config.jira_instance_uri}/browse/CCS-50"
-                            }
-                        }
-                    ]
-                },
-            }
-        }
-    ]
-
-    with patch.object(
-        client._session, "request", return_value=_mock_response(200, stream_payload)
-    ):
-        res = client.stream_assist(
-            access_token="google-user-oauth-token",
-            query="list 5 issues from CCS",
-        )
-        assert res["status"] == "success"
-        assert res["answer"] == "Here are 5 issues from project CCS with links."
-        assert res["grounding_chunks_count"] == 1
-        assert len(res["datastores_queried"]) == 10
-
-
 def test_invoke_mcp_tools_list():
     client = JiraFederatedConnectorClient(config=ConnectorConfig())
     mcp_response = {
@@ -410,4 +370,68 @@ def test_invoke_mcp_tool_handles_error():
         )
         assert res["status"] == "error"
         assert "403" in res["message"] or "Permission denied" in res.get("details", "")
+
+
+def test_invoke_tool_with_google_token_routes_to_mcp():
+    client = JiraFederatedConnectorClient(config=ConnectorConfig())
+    with patch.object(
+        client, "invoke_mcp_tool", return_value={"status": "success", "data": {"issues": [{"key": "GEAP-1"}]}}
+    ) as mock_mcp:
+        res = client.invoke_tool(
+            access_token="mock-google-token-xyz",
+            tool_name="search_issues",
+            arguments={"jql": "project = GEAP"},
+        )
+        assert res["status"] == "success"
+        mock_mcp.assert_called_once_with(
+            access_token="mock-google-token-xyz",
+            tool_name="search_issues",
+            arguments={"jql": "project = GEAP"},
+        )
+
+
+def test_invoke_tool_with_atlassian_token_routes_to_atlassian_rest():
+    client = JiraFederatedConnectorClient(config=ConnectorConfig())
+    with patch.object(client, "_get_atlassian_cloud_id", return_value="cloud-999"), \
+         patch.object(
+             client,
+             "_search_issues_atlassian_rest",
+             return_value={"status": "success", "source": "atlassian_cloud_rest", "issues": [{"key": "CCS-10"}]},
+         ) as mock_rest:
+        res = client.invoke_tool(
+            access_token="atlassian-3lo-token-jwt",
+            tool_name="search_issues",
+            arguments={"jql": "project = CCS"},
+        )
+        assert res["status"] == "success"
+        assert res["source"] == "atlassian_cloud_rest"
+        mock_rest.assert_called_once_with(
+            access_token="atlassian-3lo-token-jwt",
+            cloud_id="cloud-999",
+            safe_jql="project = CCS",
+            max_results=20,
+        )
+
+
+def test_invoke_tool_fallback_to_atlassian_rest_when_mcp_fails():
+    client = JiraFederatedConnectorClient(config=ConnectorConfig())
+    with patch.object(client, "invoke_mcp_tool", return_value={"status": "error", "message": "401 Unauthorized"}), \
+         patch.object(client, "_get_atlassian_cloud_id", return_value="cloud-999"), \
+         patch.object(
+             client,
+             "_get_issue_atlassian_rest",
+             return_value={"status": "success", "source": "atlassian_cloud_rest", "issue": {"key": "CCS-10"}},
+         ) as mock_rest:
+        res = client.invoke_tool(
+            access_token="mock-google-token-xyz",
+            tool_name="get_issue",
+            arguments={"issueIdOrKey": "CCS-10"},
+        )
+        assert res["status"] == "success"
+        assert res["source"] == "atlassian_cloud_rest"
+        mock_rest.assert_called_once_with(
+            access_token="mock-google-token-xyz",
+            cloud_id="cloud-999",
+            issue_key="CCS-10",
+        )
 
