@@ -30,49 +30,38 @@ async def test_agent_toolset_provides_mcp_tools():
     assert "create_issue" in tool_names
 
 
-def test_search_jira_issues_tool():
-    with patch.object(agent, "resolve_user_oauth_token", return_value=("fake-google-token", "test")), \
-         patch.object(agent._CLIENT, "search_issues", return_value={"status": "success", "count": 1, "issues": [{"key": "GEAP-3"}]}):
-        res = agent.search_jira_issues(query="test", max_results=5)
+@pytest.mark.asyncio
+async def test_agent_toolset_executes_mcp_tools():
+    """Verifies that discovered MCP tools execute via invoke_mcp_tool when authorized."""
+    toolset = next(t for t in agent.root_agent.tools if isinstance(t, DiscoveryEngineMcpToolset))
+    tools = await toolset.get_tools()
+    tool_map = {t.name: t for t in tools}
+
+    with patch.object(toolset.client, "check_oauth_status", return_value={"authorized": True, "auth_state": "AUTHORIZED"}), \
+         patch.object(toolset.client, "invoke_mcp_tool", return_value={"status": "success", "data": {"issues": [{"key": "GEAP-3"}]}}) as mock_invoke, \
+         patch("jira_federated_agent.mcp_toolset.resolve_user_oauth_token", return_value=("fake-google-token", "test")):
+        res = await tool_map["search_issues"].run_async(args={"jql": "project = CCS"})
         assert res["status"] == "success"
-        assert res["issues"][0]["key"] == "GEAP-3"
-
-
-def test_get_jira_issue_tool():
-    with patch.object(agent, "resolve_user_oauth_token", return_value=("fake-google-token", "test")), \
-         patch.object(agent._CLIENT, "get_issue", return_value={"status": "success", "issue": {"key": "GEAP-3", "title": "Test Issue"}}):
-        res = agent.get_jira_issue(issue_key="GEAP-3")
-        assert res["status"] == "success"
-        assert res["issue"]["title"] == "Test Issue"
-
-
-def test_create_jira_comment_tool():
-    with patch.object(agent, "resolve_user_oauth_token", return_value=("fake-google-token", "test")), \
-         patch.object(agent._CLIENT, "create_comment", return_value={"status": "success", "comment_id": 10034}):
-        res = agent.create_jira_comment(issue_key="GEAP-3", comment_body="Adding comment")
-        assert res["status"] == "success"
-        assert res["comment_id"] == 10034
-
-
-def test_list_jira_comments_tool():
-    with patch.object(agent, "resolve_user_oauth_token", return_value=("fake-google-token", "test")), \
-         patch.object(agent._CLIENT, "list_comments", return_value={"status": "success", "comments": [{"id": 10033}]}):
-        res = agent.list_jira_comments(issue_key="GEAP-3")
-        assert res["status"] == "success"
-        assert res["comments"][0]["id"] == 10033
-
-
-def test_create_jira_issue_tool():
-    with patch.object(agent, "resolve_user_oauth_token", return_value=("fake-google-token", "test")), \
-         patch.object(agent._CLIENT, "create_issue", return_value={"status": "success", "issue_key": "GEAP-10"}):
-        res = agent.create_jira_issue(
-            project_key="GEAP",
-            summary="New task from tool",
-            issue_type="Task",
-            description="Details",
+        mock_invoke.assert_called_once_with(
+            access_token="fake-google-token",
+            tool_name="search_issues",
+            arguments={"jql": "project = CCS"},
         )
-        assert res["status"] == "success"
-        assert res["issue_key"] == "GEAP-10"
+
+
+@pytest.mark.asyncio
+async def test_agent_toolset_handles_unauthorized_user():
+    """Verifies that MCP tools intercept unauthorized users and return authorization guidance."""
+    toolset = next(t for t in agent.root_agent.tools if isinstance(t, DiscoveryEngineMcpToolset))
+    tools = await toolset.get_tools()
+    tool_map = {t.name: t for t in tools}
+
+    with patch.object(toolset.client, "invoke_mcp_tool", return_value={"status": "error", "message": "401 Unauthorized"}), \
+         patch.object(toolset.client, "check_oauth_status", return_value={"authorized": False, "authorization_uri": "https://auth.atlassian.com/authorize?custom"}), \
+         patch("jira_federated_agent.mcp_toolset.resolve_user_oauth_token", return_value=("fake-google-token", "test")):
+        res = await tool_map["get_issue"].run_async(args={"issueIdOrKey": "GEAP-3"})
+        assert res["status"] == "unauthorized"
+        assert "https://auth.atlassian.com/authorize?custom" in res["message"]
 
 
 def test_check_jira_oauth_status_tool():

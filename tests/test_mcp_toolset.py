@@ -134,6 +134,10 @@ async def test_connector_tool_run_async_success(mock_connector_client):
 
 @pytest.mark.asyncio
 async def test_connector_tool_run_async_unauthorized(mock_connector_client):
+    mock_connector_client.invoke_mcp_tool.return_value = {
+        "status": "error",
+        "message": "401 Unauthorized: Atlassian 3LO token missing or expired.",
+    }
     mock_connector_client.check_oauth_status.return_value = {
         "authorized": False,
         "auth_state": "UNAUTHORIZED",
@@ -157,8 +161,7 @@ async def test_connector_tool_run_async_unauthorized(mock_connector_client):
     assert result["status"] == "unauthorized"
     assert "https://auth.atlassian.com" in result["authorization_uri"]
     assert "Please authorize Jira Cloud" in result["message"]
-    # Does not invoke the tool if unauthorized
-    mock_connector_client.invoke_mcp_tool.assert_not_called()
+    mock_connector_client.invoke_mcp_tool.assert_called_once()
 
 
 @pytest.mark.asyncio

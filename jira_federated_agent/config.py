@@ -66,19 +66,6 @@ def _get_gcloud_project_number(project_id: str) -> str:
     return ""
 
 
-JIRA_ENTITIES: tuple[str, ...] = (
-    "project",
-    "attachment",
-    "comment",
-    "issue",
-    "bug",
-    "epic",
-    "story",
-    "task",
-    "worklog",
-    "board",
-)
-
 _ISSUE_KEY_RE = re.compile(r"^(?:[A-Z][A-Z0-9_]{0,19}-\d+|\d+)$")
 _PROJECT_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,19}$")
 _SAFE_STATUS_RE = re.compile(r"^[A-Za-z0-9 _\-/]{1,64}$")
@@ -130,9 +117,6 @@ class ConnectorConfig:
     )
     oauth_user_account: str = field(
         default_factory=lambda: os.getenv("OAUTH_USER_ACCOUNT", "")
-    )
-    retrieval_mode: str = field(
-        default_factory=lambda: os.getenv("JIRA_RETRIEVAL_MODE", "mcp").lower()
     )
     authorization_id: str = field(
         default_factory=lambda: os.getenv("JIRA_AUTHORIZATION_ID", "jira-oauth-provider")
@@ -202,18 +186,6 @@ class ConnectorConfig:
     @property
     def widget_config_name(self) -> str:
         return f"{self.engine_name}/widgetConfigs/default_search_widget_config"
-
-    @property
-    def entity_data_stores(self) -> list[str]:
-        prefix = (
-            f"projects/{self.effective_project_number}/locations/{self.location}"
-            f"/collections/default_collection/dataStores/{self.collection_id}"
-        )
-        return [f"{prefix}_{entity}" for entity in JIRA_ENTITIES]
-
-    @property
-    def stream_assist_url(self) -> str:
-        return f"{self.base_api_url}/{self.engine_name}/assistants/default_assistant:streamAssist"
 
     @property
     def console_connector_url(self) -> str:

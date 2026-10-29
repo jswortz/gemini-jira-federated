@@ -45,43 +45,6 @@ def complete_jira_oauth_consent(redirect_url: str) -> dict[str, Any]:
     return _CLIENT.complete_oauth_consent(access_token=token or "", full_redirect_uri=redirect_url)
 
 
-def search_jira_issues(query: str = "", jql: str = "", max_results: int = 20, **kwargs) -> dict[str, Any]:
-    token, _ = resolve_user_oauth_token()
-    return _CLIENT.search_issues(access_token=token or "", jql=jql, query=query, max_results=max_results, **kwargs)
-
-
-def get_jira_issue(issue_key: str) -> dict[str, Any]:
-    token, _ = resolve_user_oauth_token()
-    return _CLIENT.get_issue(access_token=token or "", issue_key=issue_key)
-
-
-def list_jira_projects() -> dict[str, Any]:
-    token, _ = resolve_user_oauth_token()
-    return _CLIENT.list_projects(access_token=token or "")
-
-
-def create_jira_comment(issue_key: str, comment_body: str) -> dict[str, Any]:
-    token, _ = resolve_user_oauth_token()
-    return _CLIENT.create_comment(access_token=token or "", issue_key=issue_key, body=comment_body)
-
-
-def list_jira_comments(issue_key: str) -> dict[str, Any]:
-    token, _ = resolve_user_oauth_token()
-    return _CLIENT.list_comments(access_token=token or "", issue_key=issue_key)
-
-
-def create_jira_issue(project_key: str, summary: str, issue_type: str = "Task", description: str = "", **kwargs) -> dict[str, Any]:
-    token, _ = resolve_user_oauth_token()
-    return _CLIENT.create_issue(
-        access_token=token or "",
-        project_key=project_key,
-        summary=summary,
-        issue_type_name=issue_type,
-        description=description,
-        **kwargs,
-    )
-
-
 AGENT_INSTRUCTION = """You are an expert Jira Engineering Assistant powered by Gemini Enterprise Federated Jira Connector.
 You help engineers and managers inspect, track, search, comment on, and manage their Jira issues and projects.
 

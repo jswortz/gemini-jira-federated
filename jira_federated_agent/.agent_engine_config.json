@@ -9,7 +9,7 @@
     "DISCOVERY_ENGINE_ID": "grocery-workshop-engine",
     "JIRA_CONNECTOR_COLLECTION_ID": "${JIRA_CONNECTOR_COLLECTION_ID}",
     "JIRA_INSTANCE_URI": "${JIRA_INSTANCE_URI}",
-    "JIRA_RETRIEVAL_MODE": "mcp",
+    "JIRA_OAUTH_CLIENT_ID": "${JIRA_OAUTH_CLIENT_ID}",
     "GEMINI_MODEL": "gemini-2.5-flash"
   }
 }

@@ -42,27 +42,55 @@ def main() -> None:
             elif raw_id:
                 reasoning_engine_id = raw_id
 
-    logger.info("Target Project: %s (Number: %s)", config.project_id, config.project_number)
+    account = config.oauth_user_account
+    if not account:
+        try:
+            import subprocess
+            account = subprocess.check_output(
+                ["gcloud", "config", "get-value", "account"], text=True
+            ).strip()
+        except Exception:
+            pass
+
+    logger.info("Target Project: %s (Number: %s)", config.project_id, config.effective_project_number)
     logger.info("Target Region:  %s", args.region)
+    logger.info("Target Account: %s", account or "(Default)")
     logger.info("Reasoning Engine ID: %s", reasoning_engine_id or "(New Deployment)")
 
-    configure_vertex_ai_user_credentials(account=config.oauth_user_account, project_id=config.project_id)
+    configure_vertex_ai_user_credentials(account=account, project_id=config.project_id)
 
-    env_file = os.path.join(repo_root, args.env_file) if not os.path.isabs(args.env_file) else args.env_file
+    import tempfile
+    temp_env = os.path.join(tempfile.gettempdir(), f"adk_deploy_{os.getpid()}.env")
+    with open(temp_env, "w") as fp:
+        fp.write(f"DISCOVERY_ENGINE_PROJECT_ID={config.project_id}\n")
+        fp.write(f"DISCOVERY_ENGINE_PROJECT_NUMBER={config.effective_project_number}\n")
+        fp.write(f"DISCOVERY_ENGINE_LOCATION={config.location}\n")
+        fp.write(f"DISCOVERY_ENGINE_ID={config.engine_id}\n")
+        fp.write(f"JIRA_CONNECTOR_COLLECTION_ID={config.collection_id}\n")
+        fp.write(f"JIRA_INSTANCE_URI={config.jira_instance_uri}\n")
+        if config.jira_client_id:
+            fp.write(f"JIRA_OAUTH_CLIENT_ID={config.jira_client_id}\n")
+        fp.write(f"GEMINI_MODEL={config.model}\n")
+        if account:
+            fp.write(f"OAUTH_USER_ACCOUNT={account}\n")
 
-    logger.info("Deploying to Vertex AI Agent Engine...")
-    result = cli_deploy.to_agent_engine(
-        agent_folder=agent_folder,
-        agent_engine_id=reasoning_engine_id,
-        adk_app="agent_engine_app",
-        adk_app_object="root_agent",
-        project=config.project_id,
-        region=args.region,
-        display_name="jira_federated_agent",
-        description="Grounded Jira Assistant powered by the Gemini Enterprise Jira Federated Data Connector with per-user 3LO access control",
-        env_file=env_file if os.path.exists(env_file) else None,
-        skip_agent_import_validation=True,
-    )
+    try:
+        logger.info("Deploying to Vertex AI Agent Engine...")
+        result = cli_deploy.to_agent_engine(
+            agent_folder=agent_folder,
+            agent_engine_id=reasoning_engine_id,
+            adk_app="agent_engine_app",
+            adk_app_object="root_agent",
+            project=config.project_id,
+            region=args.region,
+            display_name="jira_federated_agent",
+            description="Grounded Jira Assistant powered by the Gemini Enterprise Jira Federated Data Connector with per-user 3LO access control",
+            env_file=temp_env,
+            skip_agent_import_validation=True,
+        )
+    finally:
+        if os.path.exists(temp_env):
+            os.remove(temp_env)
 
     logger.info("Deployment result: %s", result)
 

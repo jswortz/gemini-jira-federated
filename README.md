@@ -73,6 +73,7 @@ sequenceDiagram
     actor User as End User (Browser)
     participant Chat as Gemini Enterprise / ADK Web
     participant Agent as ADK LlmAgent
+    participant Toolset as DiscoveryEngineMcpToolset
     participant Client as JiraFederatedConnectorClient
     participant DE as Discovery Engine (:invokeConnectorMcp)
     participant Vault as IAM Auth Manager Vault
@@ -80,8 +81,9 @@ sequenceDiagram
 
     User->>Chat: "Search for open tickets in project GEAP"
     Chat->>Agent: Execute agent turn
-    Agent->>Client: search_jira_issues(project_key='GEAP')
-    Client->>DE: POST :invokeConnectorMcp<br/>{"method": "tools/call", "params": {"name": "search_issues", "arguments": {"query": "project = 'GEAP'..."}}}<br/>Header: Authorization: Bearer <Google_Access_Token>
+    Agent->>Toolset: search_issues(jql='project = "GEAP"')
+    Toolset->>Client: invoke_mcp_tool("search_issues", arguments={"jql": ...})
+    Client->>DE: POST :invokeConnectorMcp<br/>{"method": "tools/call", "params": {"name": "search_issues", "arguments": {"jql": "project = \"GEAP\""}}}<br/>Header: Authorization: Bearer <Google_Access_Token>
     
     DE->>Vault: Resolve caller identity (userIamPrincipal) & fetch Jira 3LO token
     alt 3LO Token Valid & Present in Vault
@@ -94,7 +96,8 @@ sequenceDiagram
     DE->>Jira: Forward action with user's Atlassian Bearer token<br/>POST /rest/api/3/search/jql
     Jira-->>DE: Return issues matching user permissions (JSON)
     DE-->>Client: {"result": {"isError": false, "content": [{"type": "text", "text": "..."}]}}
-    Client-->>Agent: {"status": "success", "issues": [...]}
+    Client-->>Toolset: Normalized MCP output
+    Toolset-->>Agent: {"status": "success", "data": {...}}
     Agent-->>Chat: Grounded response with issue table and links
     Chat-->>User: Displays issues with key, title, status, priority, and links
 ```
@@ -204,33 +207,14 @@ https://auth.atlassian.com/authorize?audience=api.atlassian.com&redirect_uri=htt
 Configure your target Discovery Engine app and Jira connector in `.env` (see [`.env.example`](.env.example)):
 - **GCP Project**: `DISCOVERY_ENGINE_PROJECT_ID` (`DISCOVERY_ENGINE_PROJECT_NUMBER`)
 - **Discovery Engine App / Engine**: `DISCOVERY_ENGINE_ID` (`grocery-workshop-engine`, `global`)
-- **Data Connector Collection**: `JIRA_CONNECTOR_COLLECTION_ID` (e.g. `jira-federated_...` or `jira_1759440079662`)
-- **Entity Data Stores (10)**:
-  - `_issue`, `_bug`, `_epic`, `_story`, `_task`, `_comment`, `_attachment`, `_project`, `_worklog`, `_board`
+- **Data Connector Collection**: `JIRA_CONNECTOR_COLLECTION_ID` (e.g. `jira-federated_...`)
 - **Atlassian Jira Cloud Instance**: `JIRA_INSTANCE_URI` (e.g. `https://<tenant>.atlassian.net`)
 
 ---
 
-## Retrieval Modes (`JIRA_RETRIEVAL_MODE`)
+## Federated MCP Integration (`DiscoveryEngineMcpToolset`)
 
-This agent supports two complementary retrieval strategies over the federated connector:
-
-| Retrieval Mode | Primary API Endpoint | Strengths & Characteristics | Best For |
-| :--- | :--- | :--- | :--- |
-| **`mcp`** *(Default / Option A)* | `dataConnector:invokeConnectorMcp` | **Native Model Context Protocol (MCP)**: Directly executes Jira tools (`search_issues`, `get_issue`, `list_projects`, `create_comment`, `create_issue`, `list_comments`) through Discovery Engine. Discovery Engine checks Auth Manager for the user's 3LO token, executes the action, and returns normalized JSON. | Granular searches, issue inspection, comment management, issue filing, interactive tools. |
-| **`stream_assist`** | `assistants/default_assistant:streamAssist` | **Native Gemini Enterprise Assistant**: Queries across all 10 per-entity data stores simultaneously; returns native `groundingChunks` citations and synthesized answers directly from Google's AssistantService. | High-level synthesis, cross-entity summaries, direct grounding citation benchmarks. |
-
-Configure in `.env`:
-```bash
-# Options: 'mcp' (default) or 'stream_assist'
-JIRA_RETRIEVAL_MODE=mcp
-```
-
----
-
-## Option A: Direct Federated MCP Tool (`dataConnector:invokeConnectorMcp`)
-
-Discovery Engine federated connectors (`jira-federated_1782320633397`) natively expose Model Context Protocol (MCP) actions over a single Google Cloud REST/gRPC endpoint:
+Discovery Engine federated connectors (`jira-federated_...`) natively expose Model Context Protocol (MCP) actions over a single Google Cloud REST/gRPC endpoint:
 
 ```http
 POST https://discoveryengine.googleapis.com/v1alpha/projects/{project}/locations/{location}/collections/{collection}/dataConnector:invokeConnectorMcp
@@ -240,24 +224,23 @@ Content-Type: application/json
 ```
 
 ### Request Flow
-1. **Google Authentication**: The agent invokes `dataConnector:invokeConnectorMcp` with the user's Google Cloud access token (or Vertex AI Agent Engine identity).
-2. **Auth Manager Lookup**: Discovery Engine identifies the caller and queries the **Google Cloud IAM Auth Manager** token vault for that user's linked Atlassian Jira 3LO OAuth token.
-3. **Secure Forwarding**: Discovery Engine dispatches the native MCP tool call to Atlassian Jira Cloud (`https://api.atlassian.com/ex/jira/{cloudId}/...`) with the user's Jira Bearer token.
-4. **Normalized Response**: Discovery Engine returns the normalized JSON payload inside an MCP content envelope (`{"result": {"isError": false, "content": [{"type": "text", "text": "..."}]}}`).
+1. **Dynamic MCP Tool Discovery**: `DiscoveryEngineMcpToolset` queries Discovery Engine (`tools/list`) and translates Jira MCP tool definitions directly into native ADK tools for the LLM (Gemini 2.5 Flash).
+2. **Google Cloud Authentication**: The agent invokes `dataConnector:invokeConnectorMcp` using the user's Google Cloud access token (brokered through ADK credentials).
+3. **IAM Auth Manager Lookup**: Discovery Engine identifies the caller and queries the **Google Cloud IAM Auth Manager** token vault for that user's linked Atlassian Jira 3LO OAuth token.
+4. **Secure Atlassian Proxy**: Discovery Engine dispatches the native MCP tool call to Atlassian Jira Cloud (`https://api.atlassian.com/ex/jira/{cloudId}/...`) using the user's delegated Atlassian Bearer token.
+5. **Normalized Response**: Discovery Engine returns the normalized JSON payload inside an MCP content envelope (`{"result": {"isError": false, "content": [{"type": "text", "text": "..."}]}}`).
 
-### Supported MCP Tools
+### Discovered Native MCP Tools
 
-| MCP Tool Name | ADK Agent Tool Wrapper | Description & Arguments |
+| MCP Tool Name | Schema & Arguments | Description |
 | :--- | :--- | :--- |
-| **`search_issues`** | `search_jira_issues` | Searches issues with JQL (`query`, `maxResults`, `sort_by`, `expanded_view`). Enforces bounded queries to prevent Jira 400 errors. |
-| **`get_issue`** | `get_jira_issue` | Fetches full issue details by key (`Id: "GEAP-3"`), including status, priority, reporter, assignee, attachments, and sub-tasks. |
-| **`list_projects`** | `list_jira_projects` | Lists all Jira projects accessible to the user (`page_size`, `page_token`). |
-| **`create_comment`** | `create_jira_comment` | Posts a new comment to a Jira issue (`IssueKey`, `Body`). |
-| **`update_comment`** | *(client method)* | Updates an existing comment on an issue (`IssueKey`, `Id`, `Body`). |
-| **`list_comments`** | `list_jira_comments` | Lists comment threads on an issue (`IssueKey`, `page_size`). |
-| **`create_issue`** | `create_jira_issue` | Files a new ticket in Jira Cloud (`ProjectKey`, `Summary`, `IssueTypeId`, `Description`, `PriorityName`). |
-| **`upload_attachment`** | *(client method)* | Attaches a file to a ticket (`IssueKey`, `InputFileName`, `Content`). |
-| **`list_tools`** | *(client method)* | Queries Discovery Engine with `method: "tools/list"` to inspect the 32 exposed connector tools. |
+| **`search_issues`** | `jql: string` | Searches issues with JQL (e.g., `project = "CCS" AND status != "Done"`). Gemini writes native JQL directly. |
+| **`get_issue`** | `issueIdOrKey: string` | Fetches full issue details by key (e.g., `Id: "GEAP-3"`), including status, priority, reporter, assignee, and comments. |
+| **`list_projects`** | *(empty object)* | Lists all Jira projects accessible to the authenticated user. |
+| **`create_comment`** | `issueIdOrKey: string, comment: string` | Posts a new comment to a Jira issue. |
+| **`create_issue`** | `projectKey: string, summary: string, issueType?: string, description?: string` | Files a new ticket in Jira Cloud. |
+| **`check_jira_oauth_status`** | *(helper tool)* | Inspects user's 3LO token state in Google Auth Manager. |
+| **`complete_jira_oauth_consent`** | `redirect_url: string` | Exchanges OAuth consent redirect URL to store 3LO token in Auth Manager. |
 
 ---
 

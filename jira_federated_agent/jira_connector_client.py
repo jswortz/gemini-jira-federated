@@ -420,36 +420,3 @@ class JiraFederatedConnectorClient:
             inner = res["data"].get("result", res["data"])
             return {"status": "success", "issue_key": inner.get("Key"), "issue_id": inner.get("Id"), "data": res["data"]}
         return res
-
-    def stream_assist(self, access_token: str, query: str) -> dict[str, Any]:
-        """Queries Gemini Enterprise assistant streaming (:streamAssist) with grounding chunks."""
-        url = self.config.stream_assist_url
-        headers = self._headers(access_token)
-        payload = {
-            "query": {"text": query},
-            "conversationSpec": {"conversation": ""},
-        }
-        resp = self._session.request("POST", url, headers=headers, json=payload, timeout=self.timeout)
-        if not resp.ok:
-            return {"status": "error", "message": f"streamAssist returned HTTP {resp.status_code}: {resp.text}"}
-        body = resp.json()
-        chunks = body if isinstance(body, list) else [body]
-        text_accum = []
-        citations_count = 0
-        for chunk in chunks:
-            if not isinstance(chunk, dict):
-                continue
-            ans = chunk.get("answer", {})
-            for r in ans.get("replies", []):
-                gc = r.get("groundedContent", {}).get("content", {})
-                t = gc.get("text")
-                if t:
-                    text_accum.append(t)
-            citations = ans.get("citations", {}).get("groundingChunks", [])
-            citations_count += len(citations)
-        return {
-            "status": "success",
-            "answer": " ".join(text_accum).strip(),
-            "grounding_chunks_count": citations_count,
-            "datastores_queried": self.config.entity_data_stores,
-        }

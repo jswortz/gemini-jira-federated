@@ -63,29 +63,32 @@ class DiscoveryEngineConnectorTool(BaseTool):
                 ),
             }
 
-        # Verify end-user 3LO OAuth authorization status in Auth Manager
-        auth_status = self.client.check_oauth_status(access_token=access_token)
-        if not auth_status.get("authorized", False):
-            auth_uri = auth_status.get("authorization_uri") or self.client.config.default_atlassian_auth_uri
-            return {
-                "status": "unauthorized",
-                "message": (
-                    "I cannot retrieve or modify your Jira data because you are not authorized to access Jira. "
-                    f"Please authorize Jira Cloud by visiting this URL: {auth_uri}\n"
-                    "After you authorize, you will be redirected to a URL starting with "
-                    "https://vertexaisearch.cloud.google.com/oauth-redirect?code=.... "
-                    "Please paste that full URL back here so I can complete the consent handshake."
-                ),
-                "authorization_uri": auth_uri,
-            }
-
-        # Forward execution to Discovery Engine invokeConnectorMcp
+        # Forward execution to Discovery Engine invokeConnectorMcp.
+        # Discovery Engine natively resolves the user's 3LO token from IAM Auth Manager.
         try:
-            return self.client.invoke_mcp_tool(
+            res = self.client.invoke_mcp_tool(
                 access_token=access_token,
                 tool_name=self.name,
                 arguments=args or {},
             )
+            # If the backend returns an authentication or authorization failure, provide 3LO guidance
+            if isinstance(res, dict) and res.get("status") == "error":
+                err_text = str(res.get("message", "")) + " " + str(res.get("details", ""))
+                if any(x in err_text.lower() for x in ("unauthorized", "auth", "401", "403")):
+                    auth_status = self.client.check_oauth_status(access_token=access_token)
+                    auth_uri = auth_status.get("authorization_uri") or self.client.config.default_atlassian_auth_uri
+                    return {
+                        "status": "unauthorized",
+                        "message": (
+                            "I cannot retrieve or modify your Jira data because you are not authorized to access Jira. "
+                            f"Please authorize Jira Cloud by visiting this URL: {auth_uri}\n"
+                            "After you authorize, you will be redirected to a URL starting with "
+                            "https://vertexaisearch.cloud.google.com/oauth-redirect?code=.... "
+                            "Please paste that full URL back here so I can complete the consent handshake."
+                        ),
+                        "authorization_uri": auth_uri,
+                    }
+            return res
         except Exception as e:
             logger.error("Failed to execute MCP tool %s: %s", self.name, e)
             return {

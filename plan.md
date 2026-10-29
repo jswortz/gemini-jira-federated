@@ -73,6 +73,7 @@ sequenceDiagram
     actor User as End User (Browser)
     participant Chat as Gemini Enterprise / ADK Web
     participant Agent as ADK LlmAgent
+    participant Toolset as DiscoveryEngineMcpToolset
     participant Client as JiraFederatedConnectorClient
     participant DE as Discovery Engine (:invokeConnectorMcp)
     participant Vault as IAM Auth Manager Vault
@@ -80,8 +81,9 @@ sequenceDiagram
 
     User->>Chat: "Search for open tickets in project GEAP"
     Chat->>Agent: Execute agent turn
-    Agent->>Client: search_jira_issues(project_key='GEAP')
-    Client->>DE: POST :invokeConnectorMcp<br/>{"method": "tools/call", "params": {"name": "search_issues", "arguments": {"query": "project = 'GEAP'..."}}}<br/>Header: Authorization: Bearer <Google_Access_Token>
+    Agent->>Toolset: search_issues(jql='project = "GEAP"')
+    Toolset->>Client: invoke_mcp_tool("search_issues", arguments={"jql": ...})
+    Client->>DE: POST :invokeConnectorMcp<br/>{"method": "tools/call", "params": {"name": "search_issues", "arguments": {"jql": "project = \"GEAP\""}}}<br/>Header: Authorization: Bearer <Google_Access_Token>
     
     DE->>Vault: Resolve caller identity (userIamPrincipal) & fetch Jira 3LO token
     alt 3LO Token Valid & Present in Vault
@@ -94,7 +96,8 @@ sequenceDiagram
     DE->>Jira: Forward action with user's Atlassian Bearer token<br/>POST /rest/api/3/search/jql
     Jira-->>DE: Return issues matching user permissions (JSON)
     DE-->>Client: {"result": {"isError": false, "content": [{"type": "text", "text": "..."}]}}
-    Client-->>Agent: {"status": "success", "issues": [...]}
+    Client-->>Toolset: Normalized MCP output
+    Toolset-->>Agent: {"status": "success", "data": {...}}
     Agent-->>Chat: Grounded response with issue table and links
     Chat-->>User: Displays issues with key, title, status, priority, and links
 ```
