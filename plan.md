@@ -20,86 +20,88 @@ For detailed Google Cloud conceptual standards on agent authentication brokering
 flowchart TD
     subgraph Client["Client Interface"]
         User["End User (user@your-domain.com)"]
-        ChatUI["Gemini Enterprise Chat UI / ADK Web Dev UI"]
-        User -->|"1. User Query ('What issues are open?')"| ChatUI
+        GEUI["Gemini Enterprise Chat UI"]
+        LocalUI["ADK Web Dev UI / CLI"]
+        User -->|"1a. Chat Query in Gemini Enterprise"| GEUI
+        User -->|"1b. Local Query (adk run / web)"| LocalUI
     end
 
     subgraph AgentPlatform["Vertex AI Agent Engine & ADK Runtime"]
         Agent["Jira Federated Agent\n(ADK LlmAgent / Reasoning Engine)\nAgent ID: ${AGENT_ID}"]
-        ChatUI -->|"2. StreamAssist / Query"| Agent
-        AgentClient["JiraFederatedConnectorClient\n(Google Bearer Token)"]
-        Agent -->|"3. Execute Tool"| AgentClient
+        GEUI -->|"2a. StreamAssist / Agent Run\n(Brokers Atlassian 3LO Token in session state)"| Agent
+        LocalUI -->|"2b. Local Agent Turn\n(Passes Google IAM Bearer Token)"| Agent
+        
+        Dispatcher["JiraFederatedConnectorClient.invoke_tool()\n(Dual-Path Token Dispatcher)"]
+        Agent -->|"3. Execute Tool (search_issues, get_issue...)"| Dispatcher
     end
 
-    subgraph GoogleIAM["Google Cloud IAM & Discovery Engine Auth Manager"]
-        DE["Discovery Engine Gateway\n(jira-federated_...)"]
-        AgentClient -->|"4. POST :invokeConnectorMcp\n(Google Bearer Token + tool name + args)"| DE
-        
-        AuthVault["Auth Manager 3LO Token Vault\n(userIamPrincipal: user@your-domain.com)"]
-        DE -->|"5. Resolve Caller & Query 3LO Vault"| AuthVault
-        
+    subgraph GoogleIAM["Google Cloud IAM & Discovery Engine"]
+        DE["Discovery Engine Gateway\n(:invokeConnectorMcp)"]
+        AuthVault["IAM Auth Manager 3LO Vault\n(userIamPrincipal: user@your-domain.com)"]
         AuthProvider["Authorization Provider\n(jira-oauth-provider)"]
-        AuthVault -.->|"Configured via"| AuthProvider
-        
         SMClient["Secret Manager: jira_oauth_client"]
         SMSecret["Secret Manager: jira_oauth_secret"]
+
+        DE -->|"Lookup User 3LO Token"| AuthVault
+        AuthVault -.->|"Configured via"| AuthProvider
         AuthProvider -->|"Read App ID"| SMClient
         AuthProvider -->|"Read App Secret"| SMSecret
     end
 
     subgraph AtlassianCloud["Atlassian Jira Cloud"]
         AtlassianAuth["Atlassian OAuth 2.0 (3LO) Endpoint\n(auth.atlassian.com)"]
-        AtlassianJira["Atlassian Jira REST & MCP Services\n(https://api.atlassian.com/ex/jira/...)"]
-        
-        User -.->|"One-time 3LO Consent"| AtlassianAuth
-        AtlassianAuth -.->|"Exchange Code for Refresh Token"| DE
-        DE -->|"6. Proxy Outbound Action with User's 3LO Token"| AtlassianJira
-        AtlassianJira -->|"7. Return Filtered Data (User ACLs)"| DE
+        AtlassianREST["Atlassian Jira REST API\n(api.atlassian.com/ex/jira/{cloudId}/...)"]
+        User -.->|"One-Time 3LO Consent"| AtlassianAuth
+        AtlassianAuth -.->|"Store Refresh Token"| AuthVault
     end
 
-    DE -->|"8. Normalized MCP Content Envelope"| AgentClient
-    AgentClient -->|"9. Structured Python Dict/List"| Agent
-    Agent -->|"10. Synthesized Answer with Citations"| ChatUI
-    ChatUI -->|"11. Grounded Markdown Table"| User
+    %% Dual Path Routing
+    Dispatcher -->|"Path A: Atlassian 3LO Token (Gemini Enterprise)\nDirect Atlassian Cloud REST Call"| AtlassianREST
+    Dispatcher -->|"Path B: Google IAM Token (Local CLI / ADK Web)\nPOST :invokeConnectorMcp"| DE
+    DE -->|"Proxy Outbound Action with User's 3LO Token"| AtlassianREST
+
+    AtlassianREST -->|"Filtered Jira Data (User ACLs)"| Dispatcher
+    Dispatcher -->|"Normalized MCP Payload"| Agent
+    Agent -->|"Synthesized Answer with Citations"| GEUI
+    Agent -->|"Synthesized Answer with Citations"| LocalUI
+    GEUI -->|"Grounded Markdown Table"| User
+    LocalUI -->|"Grounded Markdown Table"| User
 ```
 
 ---
 
-### Sequence Flow: Direct Federated MCP Invocation (`invokeConnectorMcp`)
+### Sequence Flow: Dual-Path Jira Invocation (Gemini Enterprise vs. Local ADK)
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User as End User (Browser)
-    participant Chat as Gemini Enterprise / ADK Web
-    participant Agent as ADK LlmAgent
+    participant Chat as Gemini Enterprise Chat / ADK Web
+    participant Agent as ADK LlmAgent (Reasoning Engine)
     participant Toolset as DiscoveryEngineMcpToolset
     participant Client as JiraFederatedConnectorClient
     participant DE as Discovery Engine (:invokeConnectorMcp)
-    participant Vault as IAM Auth Manager Vault
-    participant Jira as Atlassian Jira Cloud
+    participant Jira as Atlassian Jira Cloud REST API
 
-    User->>Chat: "Search for open tickets in project GEAP"
-    Chat->>Agent: Execute agent turn
-    Agent->>Toolset: search_issues(jql='project = "GEAP"')
-    Toolset->>Client: invoke_mcp_tool("search_issues", arguments={"jql": ...})
-    Client->>DE: POST :invokeConnectorMcp<br/>{"method": "tools/call", "params": {"name": "search_issues", "arguments": {"jql": "project = \"GEAP\""}}}<br/>Header: Authorization: Bearer <Google_Access_Token>
-    
-    DE->>Vault: Resolve caller identity (userIamPrincipal) & fetch Jira 3LO token
-    alt 3LO Token Valid & Present in Vault
-        Vault-->>DE: Return active Atlassian 3LO Bearer token
-    else Token Expired or Not Authorized
-        DE-->>Client: Error / auth_required (authorizationUri)
-        Client-->>User: Present 3LO authorization link
+    User->>Chat: "Search for open tickets in project CCS"
+    Chat->>Agent: Execute agent turn (passes auth context)
+    Agent->>Toolset: search_issues(jql='project = "CCS"')
+    Toolset->>Client: invoke_tool(access_token, "search_issues", arguments={"jql": ...})
+
+    alt Path A: Gemini Enterprise Runtime (Atlassian 3LO Token from Auth Manager)
+        Client->>Jira: Direct REST: POST /ex/jira/{cloudId}/rest/api/3/search/jql<br/>Header: Authorization: Bearer <Atlassian_3LO_Token>
+        Jira-->>Client: Return issues filtered to user permissions (JSON)
+    else Path B: Local ADK Web / CLI (Google Cloud IAM Token)
+        Client->>DE: POST :invokeConnectorMcp<br/>Header: Authorization: Bearer <Google_Access_Token>
+        DE->>Jira: Forward action with user's vaulted 3LO token
+        Jira-->>DE: Return issues (JSON)
+        DE-->>Client: Normalized MCP content envelope
     end
 
-    DE->>Jira: Forward action with user's Atlassian Bearer token<br/>POST /rest/api/3/search/jql
-    Jira-->>DE: Return issues matching user permissions (JSON)
-    DE-->>Client: {"result": {"isError": false, "content": [{"type": "text", "text": "..."}]}}
-    Client-->>Toolset: Normalized MCP output
-    Toolset-->>Agent: {"status": "success", "data": {...}}
-    Agent-->>Chat: Grounded response with issue table and links
-    Chat-->>User: Displays issues with key, title, status, priority, and links
+    Client-->>Toolset: Normalized issue payload
+    Toolset-->>Agent: {"status": "success", "issues": [...]}
+    Agent-->>Chat: Grounded response with Markdown table & issue links
+    Chat-->>User: Displays open tickets with key, title, status, priority, and links
 ```
 
 ---

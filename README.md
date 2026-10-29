@@ -20,86 +20,88 @@ When generative AI agents interact with third-party SaaS systems like Jira, they
 flowchart TD
     subgraph Client["Client Interface"]
         User["End User (user@your-domain.com)"]
-        ChatUI["Gemini Enterprise Chat UI / ADK Web Dev UI"]
-        User -->|"1. User Query ('What issues are open?')"| ChatUI
+        GEUI["Gemini Enterprise Chat UI"]
+        LocalUI["ADK Web Dev UI / CLI"]
+        User -->|"1a. Chat Query in Gemini Enterprise"| GEUI
+        User -->|"1b. Local Query (adk run / web)"| LocalUI
     end
 
     subgraph AgentPlatform["Vertex AI Agent Engine & ADK Runtime"]
         Agent["Jira Federated Agent\n(ADK LlmAgent / Reasoning Engine)\nAgent ID: ${AGENT_ID}"]
-        ChatUI -->|"2. StreamAssist / Query"| Agent
-        AgentClient["JiraFederatedConnectorClient\n(Google Bearer Token)"]
-        Agent -->|"3. Execute Tool"| AgentClient
+        GEUI -->|"2a. StreamAssist / Agent Run\n(Brokers Atlassian 3LO Token in session state)"| Agent
+        LocalUI -->|"2b. Local Agent Turn\n(Passes Google IAM Bearer Token)"| Agent
+        
+        Dispatcher["JiraFederatedConnectorClient.invoke_tool()\n(Dual-Path Token Dispatcher)"]
+        Agent -->|"3. Execute Tool (search_issues, get_issue...)"| Dispatcher
     end
 
-    subgraph GoogleIAM["Google Cloud IAM & Discovery Engine Auth Manager"]
-        DE["Discovery Engine Gateway\n(jira-federated_...)"]
-        AgentClient -->|"4. POST :invokeConnectorMcp\n(Google Bearer Token + tool name + args)"| DE
-        
-        AuthVault["Auth Manager 3LO Token Vault\n(userIamPrincipal: user@your-domain.com)"]
-        DE -->|"5. Resolve Caller & Query 3LO Vault"| AuthVault
-        
+    subgraph GoogleIAM["Google Cloud IAM & Discovery Engine"]
+        DE["Discovery Engine Gateway\n(:invokeConnectorMcp)"]
+        AuthVault["IAM Auth Manager 3LO Vault\n(userIamPrincipal: user@your-domain.com)"]
         AuthProvider["Authorization Provider\n(jira-oauth-provider)"]
-        AuthVault -.->|"Configured via"| AuthProvider
-        
         SMClient["Secret Manager: jira_oauth_client"]
         SMSecret["Secret Manager: jira_oauth_secret"]
+
+        DE -->|"Lookup User 3LO Token"| AuthVault
+        AuthVault -.->|"Configured via"| AuthProvider
         AuthProvider -->|"Read App ID"| SMClient
         AuthProvider -->|"Read App Secret"| SMSecret
     end
 
     subgraph AtlassianCloud["Atlassian Jira Cloud"]
         AtlassianAuth["Atlassian OAuth 2.0 (3LO) Endpoint\n(auth.atlassian.com)"]
-        AtlassianJira["Atlassian Jira REST & MCP Services\n(https://api.atlassian.com/ex/jira/...)"]
-        
-        User -.->|"One-time 3LO Consent"| AtlassianAuth
-        AtlassianAuth -.->|"Exchange Code for Refresh Token"| DE
-        DE -->|"6. Proxy Outbound Action with User's 3LO Token"| AtlassianJira
-        AtlassianJira -->|"7. Return Filtered Data (User ACLs)"| DE
+        AtlassianREST["Atlassian Jira REST API\n(api.atlassian.com/ex/jira/{cloudId}/...)"]
+        User -.->|"One-Time 3LO Consent"| AtlassianAuth
+        AtlassianAuth -.->|"Store Refresh Token"| AuthVault
     end
 
-    DE -->|"8. Normalized MCP Content Envelope"| AgentClient
-    AgentClient -->|"9. Structured Python Dict/List"| Agent
-    Agent -->|"10. Synthesized Answer with Citations"| ChatUI
-    ChatUI -->|"11. Grounded Markdown Table"| User
+    %% Dual Path Routing
+    Dispatcher -->|"Path A: Atlassian 3LO Token (Gemini Enterprise)\nDirect Atlassian Cloud REST Call"| AtlassianREST
+    Dispatcher -->|"Path B: Google IAM Token (Local CLI / ADK Web)\nPOST :invokeConnectorMcp"| DE
+    DE -->|"Proxy Outbound Action with User's 3LO Token"| AtlassianREST
+
+    AtlassianREST -->|"Filtered Jira Data (User ACLs)"| Dispatcher
+    Dispatcher -->|"Normalized MCP Payload"| Agent
+    Agent -->|"Synthesized Answer with Citations"| GEUI
+    Agent -->|"Synthesized Answer with Citations"| LocalUI
+    GEUI -->|"Grounded Markdown Table"| User
+    LocalUI -->|"Grounded Markdown Table"| User
 ```
 
 ---
 
-### Sequence Flow: Direct Federated MCP Invocation (`invokeConnectorMcp`)
+### Sequence Flow: Dual-Path Jira Invocation (Gemini Enterprise vs. Local ADK)
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User as End User (Browser)
-    participant Chat as Gemini Enterprise / ADK Web
-    participant Agent as ADK LlmAgent
+    participant Chat as Gemini Enterprise Chat / ADK Web
+    participant Agent as ADK LlmAgent (Reasoning Engine)
     participant Toolset as DiscoveryEngineMcpToolset
     participant Client as JiraFederatedConnectorClient
     participant DE as Discovery Engine (:invokeConnectorMcp)
-    participant Vault as IAM Auth Manager Vault
-    participant Jira as Atlassian Jira Cloud
+    participant Jira as Atlassian Jira Cloud REST API
 
-    User->>Chat: "Search for open tickets in project GEAP"
-    Chat->>Agent: Execute agent turn
-    Agent->>Toolset: search_issues(jql='project = "GEAP"')
-    Toolset->>Client: invoke_mcp_tool("search_issues", arguments={"jql": ...})
-    Client->>DE: POST :invokeConnectorMcp<br/>{"method": "tools/call", "params": {"name": "search_issues", "arguments": {"jql": "project = \"GEAP\""}}}<br/>Header: Authorization: Bearer <Google_Access_Token>
-    
-    DE->>Vault: Resolve caller identity (userIamPrincipal) & fetch Jira 3LO token
-    alt 3LO Token Valid & Present in Vault
-        Vault-->>DE: Return active Atlassian 3LO Bearer token
-    else Token Expired or Not Authorized
-        DE-->>Client: Error / auth_required (authorizationUri)
-        Client-->>User: Present 3LO authorization link
+    User->>Chat: "Search for open tickets in project CCS"
+    Chat->>Agent: Execute agent turn (passes auth context)
+    Agent->>Toolset: search_issues(jql='project = "CCS"')
+    Toolset->>Client: invoke_tool(access_token, "search_issues", arguments={"jql": ...})
+
+    alt Path A: Gemini Enterprise Runtime (Atlassian 3LO Token from Auth Manager)
+        Client->>Jira: Direct REST: POST /ex/jira/{cloudId}/rest/api/3/search/jql<br/>Header: Authorization: Bearer <Atlassian_3LO_Token>
+        Jira-->>Client: Return issues filtered to user permissions (JSON)
+    else Path B: Local ADK Web / CLI (Google Cloud IAM Token)
+        Client->>DE: POST :invokeConnectorMcp<br/>Header: Authorization: Bearer <Google_Access_Token>
+        DE->>Jira: Forward action with user's vaulted 3LO token
+        Jira-->>DE: Return issues (JSON)
+        DE-->>Client: Normalized MCP content envelope
     end
 
-    DE->>Jira: Forward action with user's Atlassian Bearer token<br/>POST /rest/api/3/search/jql
-    Jira-->>DE: Return issues matching user permissions (JSON)
-    DE-->>Client: {"result": {"isError": false, "content": [{"type": "text", "text": "..."}]}}
-    Client-->>Toolset: Normalized MCP output
-    Toolset-->>Agent: {"status": "success", "data": {...}}
-    Agent-->>Chat: Grounded response with issue table and links
-    Chat-->>User: Displays issues with key, title, status, priority, and links
+    Client-->>Toolset: Normalized issue payload
+    Toolset-->>Agent: {"status": "success", "issues": [...]}
+    Agent-->>Chat: Grounded response with Markdown table & issue links
+    Chat-->>User: Displays open tickets with key, title, status, priority, and links
 ```
 
 ---
@@ -230,17 +232,18 @@ Content-Type: application/json
 4. **Secure Atlassian Proxy**: Discovery Engine dispatches the native MCP tool call to Atlassian Jira Cloud (`https://api.atlassian.com/ex/jira/{cloudId}/...`) using the user's delegated Atlassian Bearer token.
 5. **Normalized Response**: Discovery Engine returns the normalized JSON payload inside an MCP content envelope (`{"result": {"isError": false, "content": [{"type": "text", "text": "..."}]}}`).
 
-### Discovered Native MCP Tools
+### Native MCP Tools Registered on the Agent
 
 | MCP Tool Name | Schema & Arguments | Description |
 | :--- | :--- | :--- |
 | **`search_issues`** | `jql: string` | Searches issues with JQL (e.g., `project = "CCS" AND status != "Done"`). Gemini writes native JQL directly. |
-| **`get_issue`** | `issueIdOrKey: string` | Fetches full issue details by key (e.g., `Id: "GEAP-3"`), including status, priority, reporter, assignee, and comments. |
-| **`list_projects`** | *(empty object)* | Lists all Jira projects accessible to the authenticated user. |
-| **`create_comment`** | `issueIdOrKey: string, comment: string` | Posts a new comment to a Jira issue. |
+| **`get_issue`** | `issueIdOrKey: string` | Fetches full issue details by key (e.g., `CCS-50`, `GEAP-3`), including status, priority, reporter, assignee, and comments. |
+| **`list_projects`** | `query?: string` | Lists all Jira projects accessible to the authenticated user. |
+| **`create_comment`** | `issueIdOrKey: string, comment: string` | Posts a new comment to an existing Jira issue. |
 | **`create_issue`** | `projectKey: string, summary: string, issueType?: string, description?: string` | Files a new ticket in Jira Cloud. |
-| **`check_jira_oauth_status`** | *(helper tool)* | Inspects user's 3LO token state in Google Auth Manager. |
-| **`complete_jira_oauth_consent`** | `redirect_url: string` | Exchanges OAuth consent redirect URL to store 3LO token in Auth Manager. |
+
+> [!NOTE]
+> Authorization checks and 3LO consent handling are performed programmatically by `DiscoveryEngineMcpToolset` / `JiraFederatedConnectorClient` rather than exposed as standalone LLM tools (`check_jira_oauth_status`, `complete_jira_oauth_consent`). This prevents the model from hallucinating or jumping into auth checks prematurely when the user is already authorized.
 
 ---
 
@@ -559,7 +562,7 @@ Open **`http://127.0.0.1:8000/dev-ui/?app=jira_federated_agent`** in your browse
 #### Current GCP Deployment State
 - **Vertex AI Reasoning Engine**: `projects/${PROJECT_NUMBER}/locations/us-central1/reasoningEngines/1626276928405110784`
 - **Gemini Enterprise Agent**: `projects/${PROJECT_NUMBER}/locations/global/collections/default_collection/engines/grocery-workshop-engine/assistants/default_assistant/agents/16003540595574963813`
-- **Deployment Status**: The remote Reasoning Engine currently deployed in Google Cloud is running the **Oct 28 build**. The latest refactored code on branch `feature/adk-mcp-toolset` (with in-process `DiscoveryEngineMcpToolset`) has been tested and committed to PR #3, and is ready for redeployment.
+- **Deployment Status**: Live in production. The remote Reasoning Engine was updated on **Oct 29, 2026 (15:35 UTC)** with dual-path 3LO token routing and direct Atlassian REST support from `feature/adk-mcp-toolset`.
 
 #### Updating the Live Vertex AI Agent Engine Deployment
 To redeploy the latest in-process code to the existing Reasoning Engine in `us-central1`:
