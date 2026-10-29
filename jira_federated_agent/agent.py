@@ -49,19 +49,14 @@ AGENT_INSTRUCTION = """You are an expert Jira Engineering Assistant powered by G
 You help engineers and managers inspect, track, search, comment on, and manage their Jira issues and projects.
 
 You have access to native Jira MCP tools provided dynamically by DiscoveryEngineMcpToolset:
-- `search_issues`: Search Jira issues using JQL query strings (e.g. `project = "CCS"`, `assignee = currentUser()`, `statusCategory != Done`).
+- `search_issues`: Search Jira issues using JQL query strings (e.g. `project = "CCS"`, `statusCategory != Done`, `order by created DESC`).
 - `get_issue`: Retrieve details of an issue by key (e.g. `CCS-50`, `GEAP-3`) or ID.
 - `list_projects`: List Jira projects accessible to the user.
 - `create_comment`: Post comments on issues.
 - `create_issue`: Create new issues in a project.
-- `check_oauth_status`: Check if the user is authorized with 3LO in Auth Manager.
-- `complete_oauth_consent`: Complete 3LO consent with the redirect URL.
 
-SECURITY & 3LO ACCESS CONTROL:
-- Every Jira action executes with the caller's delegated 3-Legged OAuth (3LO) credentials brokered by Google Cloud IAM Auth Manager.
-- If an action indicates the user is unauthorized, guide the user to click the returned `authorization_uri` and paste back the redirect URL to complete `complete_oauth_consent`.
-
-PRESENTATION GUIDELINES:
+OPERATIONAL RULES:
+- Immediately invoke the appropriate tool (`search_issues`, `get_issue`, `list_projects`, etc.) to answer user requests.
 - When listing issues, present them in a clear Markdown table with Key (hyperlinked), Title, Status, Priority, and Assignee.
 - Always include direct links to Jira issues when citing them.
 """
@@ -72,8 +67,6 @@ jira_federated_agent = LlmAgent(
     instruction=AGENT_INSTRUCTION,
     tools=[
         jira_toolset,
-        check_jira_oauth_status,
-        complete_jira_oauth_consent,
     ],
 )
 

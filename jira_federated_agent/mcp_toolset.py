@@ -52,21 +52,21 @@ class DiscoveryEngineConnectorTool(BaseTool):
         args: dict[str, Any],
         tool_context: Optional[ToolContext] = None,
     ) -> Any:
-        """Executes the tool via Discovery Engine :invokeConnectorMcp."""
+        """Executes the tool via Discovery Engine :invokeConnectorMcp or Atlassian Cloud 3LO REST."""
         access_token, token_source = resolve_user_oauth_token(tool_context=tool_context)
         if not access_token:
             return {
                 "status": "error",
                 "message": (
-                    "No Google Cloud access token found for authentication. "
-                    "Please provide an authorized user session token."
+                    "No authentication token found. Please ensure you are authorized to access Jira."
                 ),
             }
 
-        # Forward execution to Discovery Engine invokeConnectorMcp.
-        # Discovery Engine natively resolves the user's 3LO token from IAM Auth Manager.
+        # Forward execution to client which intelligently routes:
+        # - If Google Cloud token (ya29...): invokes Discovery Engine :invokeConnectorMcp
+        # - If Atlassian 3LO token (from Gemini Enterprise Auth Manager): invokes Atlassian Cloud REST directly
         try:
-            res = self.client.invoke_mcp_tool(
+            res = self.client.invoke_tool(
                 access_token=access_token,
                 tool_name=self.name,
                 arguments=args or {},
@@ -74,7 +74,7 @@ class DiscoveryEngineConnectorTool(BaseTool):
             # If the backend returns an authentication or authorization failure, provide 3LO guidance
             if isinstance(res, dict) and res.get("status") == "error":
                 err_text = str(res.get("message", "")) + " " + str(res.get("details", ""))
-                if any(x in err_text.lower() for x in ("unauthorized", "auth", "401", "403")):
+                if any(x in err_text.lower() for x in ("unauthorized", "invalid_token", "401", "403")):
                     auth_status = self.client.check_oauth_status(access_token=access_token)
                     auth_uri = auth_status.get("authorization_uri") or self.client.config.default_atlassian_auth_uri
                     return {
@@ -90,7 +90,7 @@ class DiscoveryEngineConnectorTool(BaseTool):
                     }
             return res
         except Exception as e:
-            logger.error("Failed to execute MCP tool %s: %s", self.name, e)
+            logger.error("Failed to execute tool %s: %s", self.name, e)
             return {
                 "status": "error",
                 "message": f"Execution of {self.name} failed: {e}",

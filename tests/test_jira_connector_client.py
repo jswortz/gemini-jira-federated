@@ -371,3 +371,67 @@ def test_invoke_mcp_tool_handles_error():
         assert res["status"] == "error"
         assert "403" in res["message"] or "Permission denied" in res.get("details", "")
 
+
+def test_invoke_tool_with_google_token_routes_to_mcp():
+    client = JiraFederatedConnectorClient(config=ConnectorConfig())
+    with patch.object(
+        client, "invoke_mcp_tool", return_value={"status": "success", "data": {"issues": [{"key": "GEAP-1"}]}}
+    ) as mock_mcp:
+        res = client.invoke_tool(
+            access_token="mock-google-token-xyz",
+            tool_name="search_issues",
+            arguments={"jql": "project = GEAP"},
+        )
+        assert res["status"] == "success"
+        mock_mcp.assert_called_once_with(
+            access_token="mock-google-token-xyz",
+            tool_name="search_issues",
+            arguments={"jql": "project = GEAP"},
+        )
+
+
+def test_invoke_tool_with_atlassian_token_routes_to_atlassian_rest():
+    client = JiraFederatedConnectorClient(config=ConnectorConfig())
+    with patch.object(client, "_get_atlassian_cloud_id", return_value="cloud-999"), \
+         patch.object(
+             client,
+             "_search_issues_atlassian_rest",
+             return_value={"status": "success", "source": "atlassian_cloud_rest", "issues": [{"key": "CCS-10"}]},
+         ) as mock_rest:
+        res = client.invoke_tool(
+            access_token="atlassian-3lo-token-jwt",
+            tool_name="search_issues",
+            arguments={"jql": "project = CCS"},
+        )
+        assert res["status"] == "success"
+        assert res["source"] == "atlassian_cloud_rest"
+        mock_rest.assert_called_once_with(
+            access_token="atlassian-3lo-token-jwt",
+            cloud_id="cloud-999",
+            safe_jql="project = CCS",
+            max_results=20,
+        )
+
+
+def test_invoke_tool_fallback_to_atlassian_rest_when_mcp_fails():
+    client = JiraFederatedConnectorClient(config=ConnectorConfig())
+    with patch.object(client, "invoke_mcp_tool", return_value={"status": "error", "message": "401 Unauthorized"}), \
+         patch.object(client, "_get_atlassian_cloud_id", return_value="cloud-999"), \
+         patch.object(
+             client,
+             "_get_issue_atlassian_rest",
+             return_value={"status": "success", "source": "atlassian_cloud_rest", "issue": {"key": "CCS-10"}},
+         ) as mock_rest:
+        res = client.invoke_tool(
+            access_token="mock-google-token-xyz",
+            tool_name="get_issue",
+            arguments={"issueIdOrKey": "CCS-10"},
+        )
+        assert res["status"] == "success"
+        assert res["source"] == "atlassian_cloud_rest"
+        mock_rest.assert_called_once_with(
+            access_token="mock-google-token-xyz",
+            cloud_id="cloud-999",
+            issue_key="CCS-10",
+        )
+

@@ -103,7 +103,7 @@ async def test_toolset_filtering(mock_connector_client):
 
 @pytest.mark.asyncio
 async def test_connector_tool_run_async_success(mock_connector_client):
-    mock_connector_client.invoke_mcp_tool.return_value = {
+    mock_connector_client.invoke_tool.return_value = {
         "status": "success",
         "tool": "search_issues",
         "issues": [{"key": "CCS-50", "summary": "Fix billing pipeline"}],
@@ -125,7 +125,7 @@ async def test_connector_tool_run_async_success(mock_connector_client):
     )
     assert result["status"] == "success"
     assert len(result["issues"]) == 1
-    mock_connector_client.invoke_mcp_tool.assert_called_once_with(
+    mock_connector_client.invoke_tool.assert_called_once_with(
         access_token="google-oauth-token-123",
         tool_name="search_issues",
         arguments={"jql": 'project = "CCS"'},
@@ -134,7 +134,7 @@ async def test_connector_tool_run_async_success(mock_connector_client):
 
 @pytest.mark.asyncio
 async def test_connector_tool_run_async_unauthorized(mock_connector_client):
-    mock_connector_client.invoke_mcp_tool.return_value = {
+    mock_connector_client.invoke_tool.return_value = {
         "status": "error",
         "message": "401 Unauthorized: Atlassian 3LO token missing or expired.",
     }
@@ -161,12 +161,12 @@ async def test_connector_tool_run_async_unauthorized(mock_connector_client):
     assert result["status"] == "unauthorized"
     assert "https://auth.atlassian.com" in result["authorization_uri"]
     assert "Please authorize Jira Cloud" in result["message"]
-    mock_connector_client.invoke_mcp_tool.assert_called_once()
+    mock_connector_client.invoke_tool.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_connector_tool_run_async_error_handling(mock_connector_client):
-    mock_connector_client.invoke_mcp_tool.return_value = {
+    mock_connector_client.invoke_tool.return_value = {
         "status": "error",
         "message": "JQL parse error: unexpected token",
     }

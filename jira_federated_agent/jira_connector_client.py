@@ -53,6 +53,271 @@ class JiraFederatedConnectorClient:
             "Content-Type": "application/json",
         }
 
+    def _atlassian_headers(self, access_token: str) -> dict[str, str]:
+        if not access_token or not access_token.strip():
+            raise ValueError("Missing OAuth2 access token.")
+        return {
+            "Authorization": f"Bearer {access_token.strip()}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+    def _get_atlassian_cloud_id(self, access_token: str) -> str | None:
+        """Fetches accessible resources from Atlassian OAuth endpoint to find cloudId."""
+        try:
+            resp = self._session.get(
+                "https://api.atlassian.com/oauth/token/accessible-resources",
+                headers=self._atlassian_headers(access_token),
+                timeout=self.timeout,
+            )
+            if not resp.ok:
+                return None
+            resources = resp.json()
+            if not isinstance(resources, list) or not resources:
+                return None
+            target = (self.config.jira_instance_uri or "").rstrip("/")
+            for r in resources:
+                if isinstance(r, dict) and r.get("url", "").rstrip("/") == target:
+                    return r.get("id")
+            return resources[0].get("id") if isinstance(resources[0], dict) else None
+        except Exception:
+            return None
+
+    def _search_issues_atlassian_rest(
+        self,
+        access_token: str,
+        cloud_id: str,
+        safe_jql: str = "",
+        max_results: int = 20,
+    ) -> dict[str, Any]:
+        """Queries Atlassian Cloud REST API directly using an Atlassian 3LO token."""
+        url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search/jql"
+
+        clean_jql = (safe_jql or "").strip()
+        if not clean_jql:
+            bound_jql = "created is not null order by created desc"
+        elif clean_jql.upper().startswith("ORDER BY"):
+            bound_jql = f"created is not null {clean_jql}"
+        else:
+            bound_jql = clean_jql
+
+        params: dict[str, Any] = {
+            "maxResults": max_results,
+            "jql": bound_jql,
+            "fields": (
+                "summary,status,issuetype,priority,project,assignee,reporter,"
+                "creator,created,updated,comment,description"
+            ),
+        }
+
+        resp = self._session.get(
+            url,
+            headers=self._atlassian_headers(access_token),
+            params=params,
+            timeout=self.timeout,
+        )
+        if not resp.ok:
+            return {
+                "status": "error",
+                "http_status": resp.status_code,
+                "message": f"Atlassian Jira REST API returned HTTP {resp.status_code}: {resp.text}",
+            }
+        data = resp.json()
+        raw_issues = data.get("issues", [])
+        normalized: list[dict[str, Any]] = []
+        for issue in raw_issues:
+            if not isinstance(issue, dict):
+                continue
+            fields = issue.get("fields", {}) or {}
+            comments_out: list[dict[str, str]] = []
+            c_block = fields.get("comment", {}) or {}
+            for c in c_block.get("comments", []) if isinstance(c_block, dict) else []:
+                if isinstance(c, dict):
+                    author = c.get("author", {}) if isinstance(c.get("author"), dict) else {}
+                    comments_out.append(
+                        {
+                            "author": author.get("displayName", "Unknown"),
+                            "created": c.get("created", ""),
+                            "text": _extract_text(c.get("body")),
+                        }
+                    )
+            proj = fields.get("project", {}) if isinstance(fields.get("project"), dict) else {}
+            stat = fields.get("status", {}) if isinstance(fields.get("status"), dict) else {}
+            itype = fields.get("issuetype", {}) if isinstance(fields.get("issuetype"), dict) else {}
+            prio = fields.get("priority", {}) if isinstance(fields.get("priority"), dict) else {}
+            assignee = fields.get("assignee", {}) if isinstance(fields.get("assignee"), dict) else {}
+            reporter = fields.get("reporter", {}) if isinstance(fields.get("reporter"), dict) else {}
+            creator = fields.get("creator", {}) if isinstance(fields.get("creator"), dict) else {}
+            key = issue.get("key", "")
+            normalized.append(
+                {
+                    "key": key,
+                    "issue_id": issue.get("id", ""),
+                    "title": fields.get("summary", ""),
+                    "status": stat.get("name", ""),
+                    "priority": prio.get("name", ""),
+                    "issue_type": itype.get("name", ""),
+                    "project_key": proj.get("key", ""),
+                    "project_name": proj.get("name", ""),
+                    "assignee": assignee.get("displayName") or assignee.get("emailAddress") or "Unassigned",
+                    "reporter": reporter.get("displayName") or reporter.get("emailAddress") or "",
+                    "creator": creator.get("displayName") or creator.get("emailAddress") or "",
+                    "created": fields.get("created", ""),
+                    "updated": fields.get("updated", ""),
+                    "description": _extract_text(fields.get("description")),
+                    "url": f"{self.config.jira_instance_uri.rstrip('/')}/browse/{key}",
+                    "comments": comments_out,
+                }
+            )
+        return {
+            "status": "success",
+            "source": "atlassian_cloud_rest",
+            "jql_executed": bound_jql,
+            "count": len(normalized),
+            "issues": normalized,
+        }
+
+    def _get_issue_atlassian_rest(
+        self, access_token: str, cloud_id: str, issue_key: str
+    ) -> dict[str, Any]:
+        """Fetches full details of a single Jira issue directly from Atlassian Cloud REST API."""
+        search_res = self._search_issues_atlassian_rest(
+            access_token=access_token,
+            cloud_id=cloud_id,
+            safe_jql=f'key = "{issue_key}"',
+            max_results=1,
+        )
+        if search_res.get("status") == "success" and search_res.get("issues"):
+            return {
+                "status": "success",
+                "source": "atlassian_cloud_rest",
+                "issue": search_res["issues"][0],
+            }
+        return {
+            "status": "error",
+            "message": f"Issue '{issue_key}' not found or not accessible.",
+        }
+
+    def _list_projects_atlassian_rest(
+        self, access_token: str, cloud_id: str, query: str = ""
+    ) -> dict[str, Any]:
+        """Lists Jira projects directly from Atlassian Cloud REST API."""
+        url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/project/search"
+        params: dict[str, Any] = {"maxResults": 50}
+        if query:
+            params["query"] = query.strip()
+        resp = self._session.get(
+            url,
+            headers=self._atlassian_headers(access_token),
+            params=params,
+            timeout=self.timeout,
+        )
+        if not resp.ok:
+            return {
+                "status": "error",
+                "http_status": resp.status_code,
+                "message": f"Atlassian Projects API returned HTTP {resp.status_code}.",
+            }
+        data = resp.json()
+        raw_projs = data.get("values", [])
+        normalized: list[dict[str, Any]] = []
+        for p in raw_projs:
+            if isinstance(p, dict):
+                normalized.append(
+                    {
+                        "key": p.get("key", ""),
+                        "name": p.get("name", ""),
+                        "project_type": p.get("projectTypeKey", ""),
+                        "id": p.get("id", ""),
+                    }
+                )
+        return {
+            "status": "success",
+            "source": "atlassian_cloud_rest",
+            "count": len(normalized),
+            "projects": normalized,
+        }
+
+    def _create_comment_atlassian_rest(
+        self, access_token: str, cloud_id: str, issue_key: str, comment: str
+    ) -> dict[str, Any]:
+        """Creates a comment directly on Atlassian Cloud REST API."""
+        url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/issue/{issue_key}/comment"
+        body_doc = {
+            "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": comment}],
+                    }
+                ],
+            }
+        }
+        resp = self._session.post(
+            url,
+            headers=self._atlassian_headers(access_token),
+            json=body_doc,
+            timeout=self.timeout,
+        )
+        if not resp.ok:
+            return {
+                "status": "error",
+                "http_status": resp.status_code,
+                "message": f"Atlassian Create Comment API returned HTTP {resp.status_code}: {resp.text}",
+            }
+        data = resp.json()
+        return {"status": "success", "source": "atlassian_cloud_rest", "comment_id": data.get("id"), "data": data}
+
+    def _create_issue_atlassian_rest(
+        self,
+        access_token: str,
+        cloud_id: str,
+        project_key: str,
+        summary: str,
+        issue_type: str = "Task",
+        description: str = "",
+    ) -> dict[str, Any]:
+        """Creates an issue directly on Atlassian Cloud REST API."""
+        url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/issue"
+        fields = {
+            "project": {"key": project_key},
+            "summary": summary,
+            "issuetype": {"name": issue_type},
+        }
+        if description:
+            fields["description"] = {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": description}],
+                    }
+                ],
+            }
+        resp = self._session.post(
+            url,
+            headers=self._atlassian_headers(access_token),
+            json={"fields": fields},
+            timeout=self.timeout,
+        )
+        if not resp.ok:
+            return {
+                "status": "error",
+                "http_status": resp.status_code,
+                "message": f"Atlassian Create Issue API returned HTTP {resp.status_code}: {resp.text}",
+            }
+        data = resp.json()
+        return {
+            "status": "success",
+            "source": "atlassian_cloud_rest",
+            "issue_key": data.get("key"),
+            "issue_id": data.get("id"),
+            "url": f"{self.config.jira_instance_uri.rstrip('/')}/browse/{data.get('key')}",
+        }
+
     def check_oauth_status(self, access_token: str) -> dict[str, Any]:
         """Checks the user's 3LO Jira OAuth status in Discovery Engine & Auth Manager."""
         headers = self._headers(access_token)
@@ -420,3 +685,43 @@ class JiraFederatedConnectorClient:
             inner = res["data"].get("result", res["data"])
             return {"status": "success", "issue_key": inner.get("Key"), "issue_id": inner.get("Id"), "data": res["data"]}
         return res
+
+    def invoke_tool(
+        self, access_token: str, tool_name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Intelligently invokes Jira actions across Discovery Engine MCP and Atlassian Cloud 3LO REST.
+
+        - If access_token resolves an Atlassian cloud_id (e.g. from Gemini Enterprise Auth Manager / temp: state):
+          invokes Atlassian Cloud REST directly.
+        - Otherwise, invokes Discovery Engine's dataConnector:invokeConnectorMcp endpoint.
+        """
+        cloud_id = self._get_atlassian_cloud_id(access_token)
+        if cloud_id:
+            if tool_name == "search_issues":
+                jql = arguments.get("jql") or arguments.get("query", "")
+                max_results = arguments.get("maxResults") or arguments.get("max_results") or 20
+                return self._search_issues_atlassian_rest(
+                    access_token=access_token, cloud_id=cloud_id, safe_jql=jql, max_results=int(max_results)
+                )
+            elif tool_name == "get_issue":
+                key = arguments.get("issueIdOrKey") or arguments.get("Id") or arguments.get("key", "")
+                return self._get_issue_atlassian_rest(access_token=access_token, cloud_id=cloud_id, issue_key=key)
+            elif tool_name == "list_projects":
+                q = arguments.get("query", "")
+                return self._list_projects_atlassian_rest(access_token=access_token, cloud_id=cloud_id, query=q)
+            elif tool_name == "create_comment":
+                key = arguments.get("issueIdOrKey") or arguments.get("IssueKey") or arguments.get("key", "")
+                body = arguments.get("comment") or arguments.get("Body", "")
+                return self._create_comment_atlassian_rest(
+                    access_token=access_token, cloud_id=cloud_id, issue_key=key, comment=body
+                )
+            elif tool_name == "create_issue":
+                proj = arguments.get("projectKey") or arguments.get("ProjectKey", "")
+                summ = arguments.get("summary") or arguments.get("Summary", "")
+                itype = arguments.get("issueType") or arguments.get("IssueTypeName", "Task")
+                desc = arguments.get("description") or arguments.get("Description", "")
+                return self._create_issue_atlassian_rest(
+                    access_token=access_token, cloud_id=cloud_id, project_key=proj, summary=summ, issue_type=itype, description=desc
+                )
+
+        return self.invoke_mcp_tool(access_token=access_token, tool_name=tool_name, arguments=arguments)
