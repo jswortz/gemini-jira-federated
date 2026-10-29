@@ -1,6 +1,6 @@
 """ADK RAG Agent over the Gemini Enterprise Jira Federated Data Connector.
 
-Uses google.adk.tools.mcp_tool.McpToolset to connect directly to the Jira MCP server,
+Uses DiscoveryEngineMcpToolset to connect directly in-process to the Jira MCP server,
 executing federated Model Context Protocol (MCP) actions against Discovery Engine's
 dataConnector:invokeConnectorMcp endpoint.
 End-user Atlassian 3-Legged OAuth (3LO) tokens are securely brokered by Google Cloud IAM Auth Manager.
@@ -9,14 +9,9 @@ End-user Atlassian 3-Legged OAuth (3LO) tokens are securely brokered by Google C
 from __future__ import annotations
 
 import logging
-import os
-import sys
 from typing import Any
 
 from google.adk.agents import LlmAgent
-from google.adk.tools.mcp_tool import McpToolset
-from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
-from mcp import StdioServerParameters
 
 from .auth import configure_vertex_ai_user_credentials, resolve_user_oauth_token
 from .config import ConnectorConfig
@@ -33,30 +28,10 @@ configure_vertex_ai_user_credentials(
 )
 _CLIENT = JiraFederatedConnectorClient(config=_CONFIG)
 
-
-def get_jira_mcp_toolset() -> McpToolset | DiscoveryEngineMcpToolset:
-    """Returns the Jira MCP toolset.
-
-    Uses the built-in google.adk.tools.mcp_tool.McpToolset with StdioConnectionParams
-    by default, connecting to the FastMCP server that proxies to Discovery Engine invokeConnectorMcp.
-    If JIRA_MCP_TRANSPORT='inprocess', returns the in-process DiscoveryEngineMcpToolset.
-    """
-    transport = os.getenv("JIRA_MCP_TRANSPORT", "builtin").lower()
-    if transport == "inprocess":
-        return DiscoveryEngineMcpToolset(client=_CLIENT)
-    return McpToolset(
-        connection_params=StdioConnectionParams(
-            server_params=StdioServerParameters(
-                command=sys.executable,
-                args=["-m", "jira_federated_agent.mcp_server"],
-            ),
-            timeout=30,
-        )
-    )
-
-
-# Built-in google.adk.tools.mcp_tool.McpToolset
-jira_toolset = get_jira_mcp_toolset()
+# Pure in-process Discovery Engine MCP Toolset:
+# Dynamically discovers MCP tools directly from Gemini Enterprise Federated Connector
+# and invokes :invokeConnectorMcp in-process with 3LO OAuth credentials brokered by Google Auth Manager.
+jira_toolset = DiscoveryEngineMcpToolset(client=_CLIENT)
 
 
 # Programmatic convenience functions
@@ -110,7 +85,7 @@ def create_jira_issue(project_key: str, summary: str, issue_type: str = "Task", 
 AGENT_INSTRUCTION = """You are an expert Jira Engineering Assistant powered by Gemini Enterprise Federated Jira Connector.
 You help engineers and managers inspect, track, search, comment on, and manage their Jira issues and projects.
 
-You have access to native Jira MCP tools provided dynamically by the built-in google.adk.tools.mcp_tool.McpToolset:
+You have access to native Jira MCP tools provided dynamically by DiscoveryEngineMcpToolset:
 - `search_issues`: Search Jira issues using JQL query strings (e.g. `project = "CCS"`, `assignee = currentUser()`, `statusCategory != Done`).
 - `get_issue`: Retrieve details of an issue by key (e.g. `CCS-50`, `GEAP-3`) or ID.
 - `list_projects`: List Jira projects accessible to the user.

@@ -117,12 +117,100 @@ class DiscoveryEngineMcpToolset(BaseToolset):
 
         access_token, _ = resolve_user_oauth_token()
         try:
-            mcp_tool_defs = self.client.list_mcp_tools(access_token=access_token or "")
+            res = self.client.list_mcp_tools(access_token=access_token or "")
+            if isinstance(res, dict):
+                mcp_tool_defs = res.get("tools", [])
+            elif isinstance(res, list):
+                mcp_tool_defs = res
+            else:
+                mcp_tool_defs = []
         except Exception as e:
             logger.warning("Failed to list MCP tools from Discovery Engine: %s. Using standard defaults.", e)
             mcp_tool_defs = []
 
-        # If Discovery Engine returned tools, wrap them
+        if not mcp_tool_defs:
+            mcp_tool_defs = [
+                {
+                    "name": "search_issues",
+                    "description": "Searches for Jira issues using JQL query string.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "jql": {
+                                "type": "string",
+                                "description": "The JQL query string to search for issues.",
+                            }
+                        },
+                        "required": ["jql"],
+                    },
+                },
+                {
+                    "name": "get_issue",
+                    "description": "Retrieves Jira issue details by issue key (e.g. CCS-50) or numeric ID.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "issueIdOrKey": {
+                                "type": "string",
+                                "description": "Jira issue key (e.g. CCS-50) or numeric ID.",
+                            }
+                        },
+                        "required": ["issueIdOrKey"],
+                    },
+                },
+                {
+                    "name": "list_projects",
+                    "description": "Lists all Jira projects accessible to the user.",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+                {
+                    "name": "create_comment",
+                    "description": "Creates a comment on a Jira issue.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "issueIdOrKey": {
+                                "type": "string",
+                                "description": "Jira issue key (e.g. CCS-50) or numeric ID.",
+                            },
+                            "comment": {
+                                "type": "string",
+                                "description": "Markdown comment text.",
+                            },
+                        },
+                        "required": ["issueIdOrKey", "comment"],
+                    },
+                },
+                {
+                    "name": "create_issue",
+                    "description": "Creates a new Jira issue in the specified project.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "projectKey": {
+                                "type": "string",
+                                "description": "Jira project key (e.g. CCS).",
+                            },
+                            "summary": {
+                                "type": "string",
+                                "description": "Issue summary/title.",
+                            },
+                            "issueType": {
+                                "type": "string",
+                                "description": "Issue type (Task, Bug, Story, Epic).",
+                                "default": "Task",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Issue description in plain text or markdown.",
+                            },
+                        },
+                        "required": ["projectKey", "summary"],
+                    },
+                },
+            ]
+
+        # Wrap discovered or default MCP tool definitions
         tools: list[BaseTool] = []
         for defn in mcp_tool_defs:
             name = defn.get("name")

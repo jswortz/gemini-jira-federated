@@ -109,7 +109,7 @@ Newer Gemini Enterprise DataConnector resources natively serve Model Context Pro
 flowchart TD
     subgraph PatternA["Pattern A: Direct Federated MCP (Current Production Baseline)"]
         AgentA["ADK LlmAgent"]
-        ToolsetA["google.adk.tools.mcp_tool.McpToolset\n(via FastMCP bridge) OR DiscoveryEngineMcpToolset"]
+        ToolsetA["DiscoveryEngineMcpToolset\n(In-Process ADK BaseToolset)"]
         DEA["Discovery Engine Gateway\nPOST :invokeConnectorMcp"]
         VaultA["Auth Manager 3LO Vault\n(userIamPrincipal)"]
         JiraA["Atlassian Jira Cloud"]

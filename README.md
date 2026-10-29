@@ -324,7 +324,7 @@ Newer Gemini Enterprise DataConnector resources natively serve Model Context Pro
 flowchart TD
     subgraph PatternA["Pattern A: Direct Federated MCP (Current Production Baseline)"]
         AgentA["ADK LlmAgent"]
-        ToolsetA["google.adk.tools.mcp_tool.McpToolset\n(via FastMCP bridge) OR DiscoveryEngineMcpToolset"]
+        ToolsetA["DiscoveryEngineMcpToolset\n(In-Process ADK BaseToolset)"]
         DEA["Discovery Engine Gateway\nPOST :invokeConnectorMcp"]
         VaultA["Auth Manager 3LO Vault\n(userIamPrincipal)"]
         JiraA["Atlassian Jira Cloud"]
@@ -353,7 +353,7 @@ flowchart TD
 - **API Method**: `POST https://discoveryengine.googleapis.com/v1alpha/projects/{project_number}/locations/{location}/collections/{collection}/dataConnector:invokeConnectorMcp`
 - **Deployment Status**: **Live in Production across all Discovery Engine regions.**
 - **Authentication**: Standard Google Cloud Bearer Token (`Authorization: Bearer $(gcloud auth print-access-token)`) with `x-goog-user-project`.
-- **ADK Integration**: Uses the built-in `google.adk.tools.mcp_tool.McpToolset` with `jira_federated_agent.mcp_server` (stdio transport) or in-process `DiscoveryEngineMcpToolset`.
+- **ADK Integration**: Uses the in-process `DiscoveryEngineMcpToolset` (subclass of ADK `BaseToolset`), executing `:invokeConnectorMcp` directly in Python memory with zero subprocess overhead and propagating per-request caller OAuth tokens.
 - **Advantages**: Completely hermetic, zero external registry configuration required, runs in local CLI, `adk web`, Cloud Run, and Vertex AI Agent Engine today without additional plugins.
 
 ### Pattern B: Google Cloud Agent Registry & Streamable-HTTP (`/dataConnector/mcp`)

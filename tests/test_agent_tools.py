@@ -1,16 +1,16 @@
-"""Unit tests for ADK Agent tools and google.adk.tools.mcp_tool.McpToolset integration."""
+"""Unit tests for ADK Agent tools and DiscoveryEngineMcpToolset integration."""
 
 from unittest.mock import MagicMock, patch
 import pytest
 
-from google.adk.tools.mcp_tool import McpToolset
 from jira_federated_agent import agent
+from jira_federated_agent.mcp_toolset import DiscoveryEngineMcpToolset
 
 
 def test_agent_tools_registered():
-    """Verifies that the agent has the built-in google.adk.tools.mcp_tool.McpToolset registered."""
+    """Verifies that the agent has the DiscoveryEngineMcpToolset registered."""
     tool_types = [type(t) for t in agent.root_agent.tools]
-    assert McpToolset in tool_types
+    assert DiscoveryEngineMcpToolset in tool_types
 
     tool_names = [getattr(t, "__name__", getattr(t, "name", str(t))) for t in agent.root_agent.tools]
     assert "check_jira_oauth_status" in tool_names
@@ -19,8 +19,8 @@ def test_agent_tools_registered():
 
 @pytest.mark.asyncio
 async def test_agent_toolset_provides_mcp_tools():
-    """Verifies that the agent's McpToolset dynamically resolves Jira MCP tools."""
-    toolset = next(t for t in agent.root_agent.tools if isinstance(t, McpToolset))
+    """Verifies that the agent's toolset dynamically resolves Jira MCP tools."""
+    toolset = next(t for t in agent.root_agent.tools if isinstance(t, DiscoveryEngineMcpToolset))
     tools = await toolset.get_tools()
     tool_names = [t.name for t in tools]
     assert "search_issues" in tool_names
@@ -28,7 +28,6 @@ async def test_agent_toolset_provides_mcp_tools():
     assert "list_projects" in tool_names
     assert "create_comment" in tool_names
     assert "create_issue" in tool_names
-    await toolset.close()
 
 
 def test_search_jira_issues_tool():
